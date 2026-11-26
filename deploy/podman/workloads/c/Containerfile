@@ -1,0 +1,9 @@
+FROM docker.io/library/gcc:14 AS build
+WORKDIR /src
+COPY main.c .
+RUN mkdir -p /out && gcc -O2 -Wall -Wextra -Werror -static -o /out/app main.c
+FROM scratch
+COPY --from=build /out/app /app
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["/app"]
