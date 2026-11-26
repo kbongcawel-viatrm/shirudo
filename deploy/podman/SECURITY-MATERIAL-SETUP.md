@@ -42,9 +42,9 @@ deploy/podman/secrets/registry/server.key  # Private TLS key, mode 0600
 
 The registry certificate SAN defaults to localhost and 127.0.0.1. Set REGISTRY_HOST and REGISTRY_IP to the actual registry identity before generation if clients use another name/address. The script refuses to overwrite existing keys.
 
-The primary signer is the initial trust anchor. For a newly provisioned target, its certificate is supplied to the runtime/config provisioning workflow as the initial BPF signer. This script does not install a key directly on a production target.
+The primary signer is the initial trust anchor. Its certificate must be embedded as the initial BPF signer in the runtime image. Use the helper's build-runtime mode when you have the target binary, runtime bootstrap config and config-verification certificate.
 
-## 3. Generate and vouch a standby signer
+## 3. Embed the primary signer in the initial runtime image\n\nWith the target Shirudo binary, runtime bootstrap configuration and config-verification certificate available, run:\n\n~~~bash\n./deploy/podman/scripts/setup-security-material.sh build-runtime \\\n  ./build/shirudo-target \\\n  ./runtime.conf \\\n  ./config-verification-cert.der \\\n  ./out/shirudo-runtime\n~~~\n\nThis invokes shirudo-gen-runtime with the generated primary cert.der as --cert and the supplied config verification certificate as --config-cert. The command builds a runtime image; it does not build the kernel/UKI or deploy/reboot the target. Review the output and complete the documented boot integration steps before provisioning. The config signing key may be the same key or a separate operator key, depending on your trust design.\n\n## 4. Generate and vouch a standby signer
 
 Use the existing config-image source tree for the target. Do not use an empty directory; it must contain a valid Shirudo config tree.
 
@@ -68,7 +68,7 @@ Optionally build the signed config image in the same operation:
 
 This invokes shirudo-gen-image --source <config-root> --output <prefix> --keys-dir <primary-keys-dir> --kind config. The config source must be valid and complete. Review the generated image and signature before delivery.
 
-## 4. Stage and activate on the target
+## 5. Stage and activate on the target
 
 Transfer the generated config image to the supported target through the approved deployment channel. On the target:
 
@@ -86,7 +86,7 @@ sudo shirudo keys
 
 Verify the standby fingerprint appears in the trusted set and frozen .bpf keyring. A live shirudo keys add or shirudo bpm key add is not the enrollment path for a target with an active config image; the signed config and reboot are required.
 
-## 5. Configure registry transport
+## 6. Configure registry transport
 
 ~~~bash
 export CA_CERT="$PWD/deploy/podman/secrets/registry/server.crt"
@@ -96,7 +96,7 @@ export REGISTRY="oci://127.0.0.1:15444/shirudo"
 
 CA_CERT is the public registry CA certificate, not either private key and not the Shirudo signing certificate.
 
-## 6. Backup and rotation
+## 7. Backup and rotation
 
 - Back up each operator key directory (signing_key.pem plus matching cert.der) to encrypted offline storage.
 - Record SPKI fingerprints through a separate trusted channel.
@@ -104,7 +104,7 @@ CA_CERT is the public registry CA certificate, not either private key and not th
 - Registry TLS rotation is independent from package-signer rotation.
 - If a signer is compromised, stop using it and follow the documented revocation process.
 
-## 7. Git hygiene
+## 8. Git hygiene
 
 Generated registry secrets and operator key directories must never be committed. Check:
 
