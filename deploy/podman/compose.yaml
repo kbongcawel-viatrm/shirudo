@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Shirudo operator-side support services for Podman.
+# Does NOT install the patched target kernel, initrd, loaders, or TPM.
+name: shirudo-lab
+services:
+  registry:
+    image: ${REGISTRY_IMAGE:-docker.io/library/registry:3.1.2}
+    container_name: shirudo-registry
+    restart: unless-stopped
+    environment:
+      REGISTRY_HTTP_ADDR: 0.0.0.0:5000
+      REGISTRY_HTTP_TLS_CERTIFICATE: /certs/server.crt
+      REGISTRY_HTTP_TLS_KEY: /certs/server.key
+      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
+    ports:
+      - ${REGISTRY_BIND:-127.0.0.1}:15444:5000
+    volumes:
+      - registry-data:/var/lib/registry
+      - ./secrets/registry:/certs:ro,Z
+    networks: [shirudo]
+  clickhouse:
+    image: ${CLICKHOUSE_IMAGE:-docker.io/clickhouse/clickhouse-server:25.8}
+    container_name: shirudo-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_SKIP_USER_SETUP: '1'
+    ports:
+      - ${CLICKHOUSE_BIND:-127.0.0.1}:18124:8123
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    networks: [shirudo]
+    healthcheck:
+      test: [CMD-SHELL, "clickhouse-client --query 'SELECT 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+  otel-collector:
+    image: ${COLLECTOR_IMAGE:-docker.io/open-telemetry/opentelemetry-collector-contrib:0.144.0}
+    container_name: shirudo-otel-collector
+    restart: unless-stopped
+    command: [--config=/etc/otelcol-contrib/config.yaml]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - ${OTLP_BIND:-127.0.0.1}:14319:4318
+    volumes:
+      - ./otelcol.yaml:/etc/otelcol-contrib/config.yaml:ro,Z
+    networks: [shirudo]
+networks:
+  shirudo:
+    name: shirudo-lab
+volumes:
+  registry-data:
+  clickhouse-data:
+  telemetry-data:
