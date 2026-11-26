@@ -14,7 +14,7 @@ usage(){
 cat <<'EOF'
 Usage:
   setup-security-material.sh
-  setup-security-material.sh enroll-standby <standby-keys-dir> <config-root> [config-image-prefix]
+  setup-security-material.sh build-runtime <target-shirudo-binary> <bootstrap-conf> <config-cert.der> <output-prefix>\n  setup-security-material.sh enroll-standby <standby-keys-dir> <config-root> [config-image-prefix]
 EOF
 }
 ensure_primary(){
@@ -24,6 +24,19 @@ ensure_primary(){
 fingerprint_hex(){
   "$SHIRUDO" bpm key fingerprint "$1" | grep -Eo '[0-9a-fA-F]{64}' | tail -n1 | tr '[:upper:]' '[:lower:]'
 }
+if [[ "${1:-}" == build-runtime ]]; then
+  [[ $# -eq 5 ]] || { usage; exit 2; }
+  need "$SHIRUDO"; need shirudo-gen-runtime; ensure_primary
+  binary=$2; bootstrap=$3; config_cert=$4; output=$5
+  [[ -x "$binary" ]] || die "target Shirudo binary must exist and be executable: $binary"
+  [[ -f "$bootstrap" && -f "$config_cert" ]] || die "bootstrap config or config verification certificate missing"
+  shirudo-gen-runtime --binary "$binary" --bootstrap-conf "$bootstrap" \
+    --cert "$KEYS_DIR/cert.der" --config-cert "$config_cert" \
+    --output "$output" --keys-dir "$KEYS_DIR"
+  printf 'Runtime image built with primary BPF signer: %s\n' "$KEYS_DIR/cert.der"
+  printf 'Review generated runtime image and UKI/boot integration before deployment.\n'
+  exit 0
+fi
 if [[ "${1:-}" == enroll-standby ]]; then
   [[ $# -ge 3 && $# -le 4 ]] || { usage; exit 2; }
   need "$SHIRUDO"; ensure_primary
