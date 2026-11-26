@@ -1,7 +1,7 @@
 FROM docker.io/library/node:22-alpine AS build
 WORKDIR /src
-COPY package*.json ./
-RUN npm ci
+COPY package.json ./
+RUN npm install --ignore-scripts
 COPY . .
 RUN npm run build
 FROM docker.io/library/nginx:1.27-alpine
