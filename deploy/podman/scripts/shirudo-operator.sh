@@ -43,12 +43,16 @@ case "$cmd" in
     ;;
   keys-check)
     [[ -d "$KEYS_DIR" ]] || die "keys directory not found: $KEYS_DIR"
-    [[ -s "$KEYS_DIR/signing_key.pem" ]] || die "missing operator signing_key.pem"
-    [[ -s "$KEYS_DIR/cert.pem" || -s "$KEYS_DIR/signing_cert.pem" ]] ||
-      die "operator certificate not found; consult Shirudo key-management docs"
-    chmod 700 "$KEYS_DIR"
-    chmod 600 "$KEYS_DIR/signing_key.pem"
-    echo "Operator key files exist; verify fingerprint and offline backup separately."
+    [[ -f "$KEYS_DIR/signing_key.pem" && -s "$KEYS_DIR/signing_key.pem" ]] ||
+      die "missing operator signing_key.pem"
+    [[ -f "$KEYS_DIR/cert.der" && -s "$KEYS_DIR/cert.der" ]] ||
+      die "missing Shirudo DER certificate: cert.der"
+    [[ "$(stat -c '%a' "$KEYS_DIR/signing_key.pem")" == 600 ]] ||
+      die "signing_key.pem must have mode 0600; fix permissions explicitly"
+    [[ "$(stat -c '%a' "$KEYS_DIR/cert.der")" == 600 ]] ||
+      die "cert.der must have mode 0600"
+    echo "Shirudo signing key and DER certificate exist with required permissions."
+    "$SHIRUDO" bpm key fingerprint "$KEYS_DIR/cert.der"
     ;;
   build)
     [[ $# -eq 2 ]] || { usage; exit 2; }
