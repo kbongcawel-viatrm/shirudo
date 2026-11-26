@@ -1,0 +1,12 @@
+FROM docker.io/library/rust:1.86-alpine AS build
+RUN apk add --no-cache musl-dev
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN cargo build --release
+FROM docker.io/library/alpine:3.21
+RUN addgroup -S app && adduser -S -G app app
+COPY --from=build /src/target/release/shirudo-rust-demo /usr/local/bin/app
+USER app
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/app"]
