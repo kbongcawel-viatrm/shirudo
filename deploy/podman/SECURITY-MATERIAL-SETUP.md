@@ -44,7 +44,21 @@ The registry certificate SAN defaults to localhost and 127.0.0.1. Set REGISTRY_H
 
 The primary signer is the initial trust anchor. Its certificate must be embedded as the initial BPF signer in the runtime image. Use the helper's build-runtime mode when you have the target binary, runtime bootstrap config and config-verification certificate.
 
-## 3. Embed the primary signer in the initial runtime image\n\nWith the target Shirudo binary, runtime bootstrap configuration and config-verification certificate available, run:\n\n~~~bash\n./deploy/podman/scripts/setup-security-material.sh build-runtime \\\n  ./build/shirudo-target \\\n  ./runtime.conf \\\n  ./config-verification-cert.der \\\n  ./out/shirudo-runtime\n~~~\n\nThis invokes shirudo-gen-runtime with the generated primary cert.der as --cert and the supplied config verification certificate as --config-cert. The command builds a runtime image; it does not build the kernel/UKI or deploy/reboot the target. Review the output and complete the documented boot integration steps before provisioning. The config signing key may be the same key or a separate operator key, depending on your trust design.\n\n## 4. Generate and vouch a standby signer
+## 3. Embed the primary signer in the initial runtime image
+
+With the target Shirudo binary, runtime bootstrap configuration and config-verification certificate available, run:
+
+~~~bash
+./deploy/podman/scripts/setup-security-material.sh build-runtime \\
+  ./build/shirudo-target \\
+  ./runtime.conf \\
+  ./config-verification-cert.der \\
+  ./out/shirudo-runtime
+~~~
+
+This invokes shirudo-gen-runtime with the generated primary cert.der as --cert and the supplied config verification certificate as --config-cert. The command builds a runtime image; it does not build the kernel/UKI or deploy/reboot the target. Review the output and complete the documented boot integration steps before provisioning. The config signing key may be the same key or a separate operator key, depending on your trust design.
+
+## 4. Generate and vouch a standby signer
 
 Use the existing config-image source tree for the target. Do not use an empty directory; it must contain a valid Shirudo config tree.
 
