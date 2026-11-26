@@ -1,6 +1,6 @@
 # Shirudo Podman Compose support stack
 
-This project provisions operator-side support services: an OCI registry, ClickHouse and an OTLP collector. It also includes a sample Python workload, image scanning/SBOM scripts, and guarded Shirudo operator lifecycle helpers.
+This project provisions operator-side support services: an OCI registry, ClickHouse and an OTLP collector. It includes example container workloads and vulnerability/SBOM workflows for Python, Node.js, TypeScript, Vite, C, Go and Rust.
 
 **It does not install the patched target kernel, Shirudo initrd, signed BPF loaders or TPM runtime.** Production enforcement requires a separate supported target booted with the Shirudo kernel and TPM 2.0.
 
@@ -25,6 +25,18 @@ podman compose --env-file .env up -d
 ```
 
 Registry, ClickHouse and OTLP ports are loopback-bound by default. Do not expose this unauthenticated lab registry or ClickHouse publicly.
+
+## Multi-language workload assessment
+
+Run `make scan-all` to build each fixture, generate SPDX SBOMs and Trivy JSON reports, and fail the gate on HIGH/CRITICAL findings. Outputs are written under `artifacts/` (git-ignored). Workload build contexts are under `workloads/`; Python remains under `python-app/`.
+
+For a specific advisory, prepare a language-specific review packet:
+
+```bash
+./scripts/language-vulnerability-workflow.sh typescript CVE-YYYY-NNNN
+```
+
+These fixtures are smoke-test examples, not production applications. See [workloads/README.md](workloads/README.md) for hardening guidance.
 
 ## Python workload assessment
 
