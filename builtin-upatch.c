@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -33,6 +34,7 @@
 #include <bpf/btf.h>
 #include <bpf/libbpf.h>
 
+#include <shirudo/enforcement.h>
 #include <shirudo/misc.h>
 #include <shirudo/overflow.h>
 #include <shirudo/string.h>
@@ -515,7 +517,6 @@ static int cmd_upatch_info(int argc, const char **argv)
 		json_kv_int(&e, "loader_insns_len",
 			    u.hdr.loader_insns_len);
 		json_kv_int(&e, "signature_len", u.hdr.signature_len);
-		json_kv_int(&e, "metadata_len", u.hdr.metadata_len);
 		json_kv_int(&e, "data_len", u.hdr.data_len);
 		json_kv_int(&e, "log_buf_sz", u.hdr.log_buf_sz);
 		json_kv_int(&e, "file_size", (__s64)u.map_size);
@@ -582,11 +583,6 @@ static int cmd_upatch_info(int argc, const char **argv)
 	printf("  %-22s off=%u len=%u\n", "Instructions:",
 	       u.hdr.loader_insns_off, u.hdr.loader_insns_len);
 	printf("  %-22s %u\n", "Log buffer size:", u.hdr.log_buf_sz);
-	if (u.hdr.metadata_len)
-		printf("  %-22s off=%u len=%u\n", "Metadata:",
-		       u.hdr.metadata_off, u.hdr.metadata_len);
-	else
-		printf("  %-22s (none)\n", "Metadata:");
 	if (u.hdr.data_len)
 		printf("  %-22s off=%u len=%u\n", "Data:",
 		       u.hdr.data_off, u.hdr.data_len);
@@ -1595,6 +1591,57 @@ static int obj_pin(int fd, const char *path)
 	return ret >= 0 ? 0 : -errno;
 }
 
+static int open_upatch_pin_dir(const char *name)
+{
+	char path[PATH_MAX];
+	int root, fd;
+
+	if (upatch_pin_path(path, sizeof(path), name, NULL))
+		return -ENAMETOOLONG;
+	root = bpffs_root_open();
+	if (root < 0)
+		return root == -ENOENT ? -ENODEV : root;
+	fd = open_beneath_same_mount(root, path + sizeof(BPFFS_DIR), O_RDONLY | O_DIRECTORY);
+	close(root);
+	return fd;
+}
+
+static int pin_grant_request(int fd, __u32 command)
+{
+	int ret = ioctl(fd, command, 0);
+
+	if (ret < 0 && errno == SHIRUDO_PIN_GRANT_ACK)
+		return 0;
+	return ret < 0 ? -errno : -EPROTO;
+}
+
+/* Holding fd prevents inode reuse until the task no longer has authority. */
+static int pin_grant_open(const char *name)
+{
+	int fd, ret;
+
+	fd = open_upatch_pin_dir(name);
+	if (fd < 0)
+		return fd;
+	ret = pin_grant_request(fd, SHIRUDO_PIN_GRANT_BEGIN);
+	if (ret) {
+		close(fd);
+		return ret;
+	}
+	return fd;
+}
+
+static void pin_grant_close(int *fd)
+{
+	if (*fd < 0)
+		return;
+	if (pin_grant_request(*fd, SHIRUDO_PIN_GRANT_END)) {
+		pr_err("upatch: cannot release pin deletion authority; terminating");
+		_exit(EXIT_FAILURE);
+	}
+	close(*fd);
+}
+
 /*
  * A pin a load left when it died before its link is bound to maps nothing
  * reaches any more: replace it.
@@ -1761,6 +1808,7 @@ static int attach_and_pin_progs(const struct loader_ctx *cx,
 				const struct prog_spec *specs)
 {
 	char dir[PATH_MAX], serializers_dir[PATH_MAX + 16];
+	int grant __cleanup(pin_grant_close) = -1;
 	bool made_dir = false, made_serializers = false;
 	__u32 i, attach_count = 0, attach_seen = 0;
 	struct xdp_device *devices = NULL;
@@ -1805,6 +1853,11 @@ static int attach_and_pin_progs(const struct loader_ctx *cx,
 	ret = mkdir_if_absent(dir, 0700, &made_dir);
 	if (ret) {
 		pr_err("mkdir %s: %s", dir, strerror(-ret));
+		goto out;
+	}
+	grant = pin_grant_open(name);
+	if (grant < 0) {
+		ret = grant;
 		goto out;
 	}
 	count_attach_progs(specs, nr_progs, &attach_count);
@@ -2505,6 +2558,12 @@ static int loader_prog_load(struct signed_load *sl)
 
 	insns = upatch_loader(u);
 	sig   = upatch_signature(u);
+	if (cms_check_signers(sig, u->hdr.signature_len)) {
+		pr_err("upatch: unreadable CMS signer information");
+		rep_fail(rep, "signed_loader_load", "parser_rejected", EBADMSG,
+			 "invalid CMS signature envelope");
+		return 1;
+	}
 	insn_cnt = u->hdr.loader_insns_len / sizeof(struct bpf_insn);
 
 	upatch_prog_name(u, prog_name, sizeof(prog_name));
@@ -3310,6 +3369,7 @@ static int upatch_pinned(const char *name)
 /* Unlinking the link pin drops its last reference, which detaches. */
 static int remove_pin_dir(const char *name)
 {
+	int grant __cleanup(pin_grant_close) = -1;
 	char dir[PATH_MAX], maps_dir[PATH_MAX + 8];
 	char serializers_dir[PATH_MAX + 16];
 	struct stat st;
@@ -3322,8 +3382,9 @@ static int remove_pin_dir(const char *name)
 	if (strsprintf(serializers_dir, sizeof(serializers_dir),
 		       "%s/serializers", dir) < 0)
 		return -ENAMETOOLONG;
-	if (stat(dir, &st) != 0)
-		return -errno;
+	grant = pin_grant_open(name);
+	if (grant < 0)
+		return grant;
 	if (stat(maps_dir, &st) == 0) {
 		ret = wipe_dir_flat(maps_dir);
 		if (ret)
@@ -3343,14 +3404,15 @@ static int remove_pin_dir(const char *name)
  * one read. A copy on disk, under a name another command can take, or a
  * file read again, could set them apart.
  */
-static int read_upatch(const char *src, __u8 **buf, size_t *len,
+static int read_upatch(const char *src, int fd, __u8 **buf, size_t *len,
 		       struct upatch *u)
 {
 	int ret;
 
 	*buf = NULL;
 	*len = 0;
-	ret = read_file(src, UPATCH_FILE_MAX, buf, len);
+	ret = fd < 0 ? read_file(src, UPATCH_FILE_MAX, buf, len) :
+		       read_fd(fd, src, UPATCH_FILE_MAX, buf, len);
 	if (ret)
 		return ret;
 	ret = upatch_open_memory(*buf, *len, u);
@@ -3506,7 +3568,8 @@ struct load_args {
 	bool		loaded_is_done;
 };
 
-static int upatch_load(const struct load_args *args)
+/* fd, when it is one, is the file to read; args->file then only names it. */
+static int upatch_load(const struct load_args *args, int fd)
 {
 	const char *file = args->file, *report = args->report;
 	char name[UPATCH_NAME_MAX + 1] = {};
@@ -3524,7 +3587,7 @@ static int upatch_load(const struct load_args *args)
 			 "load") != 0)
 		goto done;
 
-	err = read_upatch(file, &buf, &len, &u);
+	err = read_upatch(file, fd, &buf, &len, &u);
 	if (err) {
 		pr_err("upatch load: read %s: %s", file, strerror(-err));
 		rep_fail(&rep, "parse", "parser_rejected", -err,
@@ -3663,7 +3726,7 @@ static int cmd_upatch_load(int argc, const char **argv)
 			    &args.no_version_check, &args.report);
 	if (err)
 		return err == OPT_DONE ? 0 : err;
-	return upatch_load(&args);
+	return upatch_load(&args, -1);
 }
 
 /*
@@ -3729,7 +3792,7 @@ static int java_unload_locked(const char *name,
 	return 0;
 }
 
-static int cmd_upatch_unload(int argc, const char **argv)
+static int cmd_upatch_unload(int argc, const char **argv, int fd)
 {
 	const char *file, *expect_chain, *expect_version_id, *report;
 	struct op_report rep = { .op = "upatch_unload", .phase = "done" };
@@ -3757,7 +3820,7 @@ static int cmd_upatch_unload(int argc, const char **argv)
 	 * signature check covers must be the bytes acted on after it, and a
 	 * file of root's is root's to rewrite between the two.
 	 */
-	err = read_upatch(file, &buf, &len, &u);
+	err = read_upatch(file, fd, &buf, &len, &u);
 	if (err) {
 		pr_err("upatch unload: read %s: %s", file, strerror(-err));
 		rep_fail(&rep, "parse", "parser_rejected", -err,
@@ -3980,32 +4043,121 @@ static int purge_is_loaded(const char *name, __u32 type)
 	return ret ? ret : 1;
 }
 
+/*
+ * The archive of name, open, once it is one a signer can be read from:
+ * it parses and its signed name is the one it is filed under.
+ * UPATCH_PURGE_NO_ARCHIVE when the name has none.
+ */
+static int purge_archive_open(const char *persisted, const char *name,
+			      struct upatch *u)
+{
+	char archive_name[UPATCH_NAME_MAX + 1];
+	int fd, ret;
+
+	fd = seal_open_read(persisted);
+	if (fd == -ENOENT)
+		return UPATCH_PURGE_NO_ARCHIVE;
+	if (fd < 0)
+		return fd;
+	ret = upatch_open_fd(fd, u);
+	close(fd);
+	if (ret)
+		return ret;
+	upatch_header_name(u, archive_name);
+	if (!upatch_name_signed(u) || strcmp(name, archive_name)) {
+		upatch_close(u);
+		return -EBADMSG;
+	}
+	return 0;
+}
+
+int upatch_purge_check(const char *name)
+{
+	char persisted[PATH_MAX];
+	struct upatch u;
+	int lock, ret;
+
+	if (!upatch_name_valid(name))
+		return -EINVAL;
+	if (strsprintf(persisted, sizeof(persisted), "%s/%s.upatch",
+		       UPATCHES_DIR, name) < 0)
+		return -ENAMETOOLONG;
+	lock = eventlog_lock();
+	if (lock < 0)
+		return lock;
+	ret = purge_archive_open(persisted, name, &u);
+	if (!ret) {
+		ret = cms_check_signers(upatch_signature(&u),
+					u.hdr.signature_len);
+		upatch_close(&u);
+	}
+	eventlog_unlock(lock);
+	return ret;
+}
+
+/*
+ * 1 when something may run under a name whose archive does not say what
+ * it is: its pin directory, or a jar. A reboot takes both away.
+ */
+static int purge_name_runs(const char *name)
+{
+	char jar[PATH_MAX];
+	struct stat st;
+	int ret;
+
+	ret = upatch_pinned(name);
+	if (ret)
+		return ret;
+	ret = java_agent_path(name, jar, sizeof(jar));
+	if (ret)
+		return ret;
+	if (!lstat(jar, &st))
+		return 1;
+	return errno == ENOENT ? 0 : -errno;
+}
+
+/*
+ * An archive no signer can be read from: err, unless nothing runs under
+ * its name, which leaves the revocation nothing to unload.
+ */
+static int purge_no_signer(const char *name, int err)
+{
+	int runs = purge_name_runs(name);
+
+	if (runs < 0)
+		return runs;
+	if (runs)
+		return err;
+	pr_warn("upatch purge: %s.upatch names no signer: %s", name,
+		strerror(-err));
+	return UPATCH_PURGE_NO_SIGNER;
+}
+
 static int upatch_purge_locked(const char *name, const struct cert *signer,
 			       const char *reason)
 {
 	__u8 payload[UPATCH_PAYLOAD_HASH_LEN] = {};
 	char persisted[PATH_MAX];
-	int fd, loaded, ret;
+	int loaded, ret;
 	struct upatch u;
 	__u32 type;
 
 	if (strsprintf(persisted, sizeof(persisted), "%s/%s.upatch",
 		       UPATCHES_DIR, name) < 0)
 		return -ENAMETOOLONG;
-	ret = seal_open_read(persisted);
+	ret = purge_archive_open(persisted, name, &u);
 	if (ret < 0)
-		return ret;
-	fd = ret;
-	ret = upatch_open_fd(fd, &u);
-	close(fd);
+		return purge_no_signer(name, ret);
 	if (ret)
 		return ret;
 	ret = cms_signed_by(upatch_signature(&u), u.hdr.signature_len, signer);
 	memcpy(payload, u.hdr.payload_sha256, sizeof(payload));
 	type = u.hdr.type;
 	upatch_close(&u);
+	if (ret < 0)
+		return purge_no_signer(name, ret);
 	if (ret != 1)
-		return ret < 0 ? ret : -ESTALE;
+		return UPATCH_PURGE_OTHER_SIGNER;
 
 	/* As for unload: the event first, then the detach it describes. */
 	loaded = purge_is_loaded(name, type);
@@ -4040,9 +4192,8 @@ static int upatch_purge_locked(const char *name, const struct cert *signer,
  * Under the register lock from the archive read to its unlink, as a
  * load and an unload hold it, so that a load of the name that takes the
  * lock after the purge's event is not the one the purge then removes,
- * and with the signer checked on what that read finds: a caller's scan
- * ran before the lock, and an upgrade may have replaced the upatch since
- * with one another key signed.
+ * and with the signer checked on what that read finds. An upgrade may
+ * have replaced the archive since the directory scan.
  */
 int upatch_purge(const char *name, const struct cert *signer,
 		 const char *reason)
@@ -4067,7 +4218,7 @@ int upatch_purge(const char *name, const struct cert *signer,
  * Package installs take the same path as the upatch commands, and take
  * the payload already loaded under the name for one done.
  */
-int upatch_install(const char *path)
+int upatch_install_fd(const char *path, int fd)
 {
 	const struct load_args args = {
 		.file		= path,
@@ -4075,14 +4226,24 @@ int upatch_install(const char *path)
 		.loaded_is_done	= true,
 	};
 
-	return upatch_load(&args);
+	return upatch_load(&args, fd);
+}
+
+int upatch_install(const char *path)
+{
+	return upatch_install_fd(path, -1);
+}
+
+int upatch_remove_fd(const char *path, int fd)
+{
+	const char *argv[] = { "unload", "--no-precheck", path };
+
+	return cmd_upatch_unload(3, argv, fd);
 }
 
 int upatch_remove(const char *path)
 {
-	const char *argv[] = { "unload", "--no-precheck", path };
-
-	return cmd_upatch_unload(3, argv);
+	return upatch_remove_fd(path, -1);
 }
 
 /*
@@ -5048,6 +5209,7 @@ static int reconcile_collect(struct xdp_work **out, size_t *count,
 }
 
 struct link_scan {
+	const char	*name;
 	__u32	next;
 	bool	dead;
 	bool	collect;
@@ -5062,6 +5224,12 @@ static int scan_link(__u32 index, const char *pin,
 	if (info->type == BPF_LINK_TYPE_XDP && !info->xdp.ifindex) {
 		scan->dead = true;
 		if (scan->collect) {
+			int grant __cleanup(pin_grant_close) = -1;
+
+			grant = pin_grant_open(scan->name);
+
+			if (grant < 0)
+				return grant;
 			if (unlink(pin))
 				return -errno;
 			pr_info("XDP: removed %s, its device is gone", pin);
@@ -5171,7 +5339,7 @@ static int reconcile_apply(const struct xdp_work *w,
 			   const struct xdp_device *devices, size_t count,
 			   struct op_report *rep)
 {
-	struct link_scan scan = { .collect = true };
+	struct link_scan scan = { .name = w->name, .collect = true };
 	__u8 payload[UPATCH_PAYLOAD_HASH_LEN];
 	bool held, needed = false;
 	struct upatch again;
@@ -5350,7 +5518,7 @@ int cmd_upatch(int argc, const char **argv)
 	if (strcmp(canonical, "load") == 0)
 		return cmd_upatch_load(argc - 1, argv + 1);
 	if (strcmp(canonical, "unload") == 0)
-		return cmd_upatch_unload(argc - 1, argv + 1);
+		return cmd_upatch_unload(argc - 1, argv + 1, -1);
 	if (strcmp(canonical, "list") == 0)
 		return cmd_upatch_list(argc - 1, argv + 1);
 	if (strcmp(canonical, "get") == 0)

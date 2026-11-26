@@ -93,7 +93,8 @@ export type ImageGroup = {
   health: number;
   /** Shared by every member, null when members differ. */
   kernel: string | null;
-  tree: { minLastSeq: number | null; headSeq: number | null };
+  /** The tree position of the member furthest behind its own tree. */
+  tree: { lastSeq: number | null; headSeq: number | null };
   shields: Shields;
   /** Exposed findings of the worst member. */
   exposed: number;
@@ -127,14 +128,41 @@ export function healthPercent(nodes: readonly Pick<FleetNode, "status">[]): numb
   return Math.round((100 * nodes.filter((n) => n.status === "healthy").length) / nodes.length);
 }
 
-const minOrNull = (xs: (number | null)[]) => {
-  const v = xs.filter((x): x is number => x !== null);
-  return v.length ? Math.min(...v) : null;
-};
-const maxOrNull = (xs: (number | null)[]) => {
-  const v = xs.filter((x): x is number => x !== null);
-  return v.length ? Math.max(...v) : null;
-};
+/**
+ * Where a member with no known head ranks: after every member known to
+ * be behind, which is a whole step or more, and before one caught up.
+ */
+const UNKNOWN_LAG = 0.5;
+
+/**
+ * head − last: how far behind its own tree a member is. One past the
+ * head is at it, as check 5 of node_status has it.
+ */
+const lagOf = (t: ImageGroup["tree"]) =>
+  t.headSeq === null ? UNKNOWN_LAG : Math.max(0, t.headSeq - t.lastSeq!);
+
+/**
+ * The tree position of the member furthest behind its own tree, all-null
+ * when none follows one. Members of an image can follow independent
+ * trees, so their positions never mix into one pair. A member whose
+ * head is unknown counts ahead of the caught-up ones, so that the group
+ * never reports a head every member reached while one may not have.
+ */
+function behindTree(members: readonly FleetNode[]): ImageGroup["tree"] {
+  const worst = members
+    .filter((m) => m.tree.lastSeq !== null)
+    .sort((a, b) => lagOf(b.tree) - lagOf(a.tree) || a.tree.lastSeq! - b.tree.lastSeq!)[0];
+  return { lastSeq: worst?.tree.lastSeq ?? null, headSeq: worst?.tree.headSeq ?? null };
+}
+
+/**
+ * What the TREE column sorts by: the lag turned around, so the row
+ * furthest behind comes first, a row whose head is unknown between
+ * those behind and those caught up, as in an image's roll-up, and
+ * before them all the rows that follow no tree, whose key is below any
+ * distance a row can be behind.
+ */
+export const treeSortKey = (t: ImageGroup["tree"]) => (t.lastSeq === null ? -Infinity : 0 - lagOf(t));
 
 export function groupByImage(nodes: readonly FleetNode[]): ImageGroup[] {
   const byImage = new Map<string, FleetNode[]>();
@@ -159,10 +187,7 @@ export function groupByImage(nodes: readonly FleetNode[]): ImageGroup[] {
       ),
       health: healthPercent(members) ?? 0,
       kernel: members.every((m) => m.kernel === first.kernel) ? first.kernel : null,
-      tree: {
-        minLastSeq: minOrNull(members.map((m) => m.tree.lastSeq)),
-        headSeq: maxOrNull(members.map((m) => m.tree.headSeq)),
-      },
+      tree: behindTree(members),
       shields: { applied: sum("applied"), pending: sum("pending"), idle: sum("idle") },
       exposed: Math.max(...members.map((m) => m.exposed)),
       unknown: members.reduce((t, m) => t + m.unknown, 0),

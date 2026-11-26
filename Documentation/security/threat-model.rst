@@ -444,10 +444,10 @@ upatch, because the kernel verifies every loader (T1). What a registry
 can do to indexes, tree publications and the transport is described in
 T7 and U3 to U4.
 
-The evidence boundary runs through the attestation document. Only two
-parts of what ``shirudo attest`` produces are authenticated: the
-``TPM2_Quote`` over the selected PCRs and the ``TPM2_NV_Certify`` of the
-register, both signed by the attestation key over the verifier's nonce.
+The evidence boundary runs through the attestation document. The TPM
+authenticates the PCR quote and the certifications of the patch register
+and optional config NvPCR. The verifier's nonce starts the exchange and
+each subsequent step commits to the preceding TPM signatures.
 Everything else in the document is the target's own account: the
 eventlog records, the config history, the fields of the init record
 (``bound_in``, ``ts``, ``boot_id``, the certificate list and the set),
@@ -627,18 +627,55 @@ authority (``PerfAttach``).
 
 In the private bpffs, unlink, rename, mkdir, symlink, hard link, rmdir
 and xattr changes need runtime authority (``PinUnlink``, ``PinRename``,
-``PinEntry``, ``PinXattr``; rmdir is refused without a counter). The
+``PinEntry``, ``PinXattr``). The
 VFS removes a rename's victim without asking ``inode_unlink``, so the
 rename hook checks both directories. A symbolic link in place of a pin
 directory would send the next load's pins into a bpffs of root's, and a
 hard link to a pin would keep a link alive past its unlink.
 
+After bootstrap, even a trusted task needs a deletion grant for one
+upatch's directory. The native and compat ioctl hooks take the directory
+from an open file description on the recorded private bpffs. The grant
+is task-local. The caller holds the directory open, keeping its inode
+number unique on that superblock, until it explicitly releases the grant.
+Fork starts without a grant and successful exec clears it. Removing
+the directory consumes it. No grant names a core pin or the upatches
+root. Renaming a pin after bootstrap is refused. This protects against
+unintended cleanup by trusted code. Signed unload verification, the
+payload comparison and measurement still take place in userspace.
+
 The pins live as long as the bpffs superblock, which goes with its last
 mount. ``lsm/sb_umount``, ``lsm/move_mount``, ``lsm/sb_mount`` and
 ``lsm/sb_remount`` refuse every caller, shirudo included, an unmount, a
 move, a mount over or a remount of the private bpffs (``BpffsUmount``,
-``BpffsMount``). Figure 2 shows the two ways an operation on a mount far
-from the bpffs takes it along.
+``BpffsMount``). They go by the superblock, as the guards on the pins
+do, and not by the path. A legacy ``mount(2)`` with ``MS_BIND`` names
+its source in a string that ``lsm/sb_mount`` cannot resolve, so root can
+bind the bpffs at a second path. That is a second name for the same pins
+and no other way to them: through it a pin is no more unlinked, renamed
+or opened, and the second mount is no more unmounted, remounted or
+mounted over than the first (``t6159``, R3). Figure 2 shows the two ways
+an operation on a mount far from the bpffs takes it along.
+
+Bootstrap in the initrd records the unique mount IDs of its root and the
+target root. In the protected namespace, only host PID 1 can pivot from
+the first to the second. It may change propagation on the bpffs ancestry
+while it is on the initrd root. Any caller may make a mount shared at any
+time. The kernel refuses to move a mount whose parent is shared, so shared
+is the state these guards keep: systemd asks for it after the switch and
+``ip netns add`` asks for it on ``/run/netns``. That refusal does not
+hold on its own, since ``mount_setattr(2)`` changes propagation without
+a hook on the pinned kernel (R3), and a legacy ``MS_MOVE`` reaches
+``lsm/sb_mount`` with its target alone. The hook therefore refuses
+every legacy move onto a mount of the protected namespace
+(``BpffsMount``), whatever it moves, to every caller but host PID 1 on
+the initrd root. A move there goes through ``move_mount(2)``, where
+``lsm/move_mount`` sees both paths and refuses, with the same exception,
+a move of the bpffs or of a mount above it, which would take the bpffs
+along. A program that knows only the legacy call no longer moves a
+mount in that namespace. Before allowing the old root to detach, the unmount guard checks
+that the new root has a copy of the same bpffs subtree outside the reach
+of the unmount and transfers its protection to that copy.
 
 .. figure:: /images/security-bpffs-mounts.svg
    :alt: Three mount namespaces. In init's, the root, /run, the
@@ -698,7 +735,7 @@ and the returned link's ifindex around attachment.
    ``lsm/inode_rename``, ``lsm/inode_mkdir``, ``lsm/inode_symlink``,
    ``lsm/inode_link``, ``lsm/inode_rmdir``, ``lsm/inode_setxattr``,
    ``lsm/inode_removexattr``, ``lsm/sb_umount``, ``lsm/move_mount``,
-   ``lsm/sb_mount``, ``lsm/sb_remount``
+   ``lsm/sb_mount``, ``lsm/sb_remount``, ``lsm/sb_pivotroot``
 :Refusal: ``EACCES`` from ``bpf()``, from opening a pin and from the
    perf ioctl; ``EPERM`` from the inode and mount guards;
    ``attach_scope_mismatch`` from ``shirudo upatch load``
@@ -707,7 +744,7 @@ and the returned link's ifindex around attachment.
    ``PinXattr``, ``BpffsUmount``, ``BpffsUmountAbove``, ``BpffsMount``
 :Tests: ``t6105``, ``t6106``, ``t6107``, ``t6108``, ``t6109``,
    ``t6116``, ``t6119``, ``t6120``, ``t6121``, ``t6138``, ``t6155``,
-   ``t3111``
+   ``t6158``, ``t3111``
 :Residual: R1, R2, R3, U17
 
 .. _tm-t3:
@@ -1316,8 +1353,10 @@ T9 A target lying about its state
 target's own account, and a compromised target says what root wants.
 ``shirudo attest`` makes the TPM speak instead. It produces a quote
 over the selected PCRs, by default 0 to 7, 9 and 11 to 15, and a
-certification of the register, both signed by the attestation key with
-the verifier's nonce. The attestation key is an ECDSA P-256 primary
+pair of register certifications signed on either side of that quote.
+The opening certification carries the verifier's nonce. The quote commits
+to the opening signatures and the closing certifications commit to the
+quote signature. The attestation key is an ECDSA P-256 primary
 with a fixed template under the endorsement hierarchy. A credential the
 verifier makes under the target's endorsement key (``shirudo attest
 challenge``), and the target activates while attesting, proves that the
@@ -1329,7 +1368,9 @@ attestation key, its name against its public area and, with
 ``--ak-name``, against the pinned name. It checks the quote's PCR
 digest, that the certification names the listed index and value, and
 that both come from one TPM boot, with the same reset and restart
-counts, as a restart clears the register too. It recomputes the index's
+counts, as a restart clears the register too. Both readings of each
+extend-only index must agree. This ties the config and patch measurements
+to the instant of the quote. It recomputes the index's
 public area from the recorded PCR 9 and 11 binding values and the NV
 writer's public key, so a recreated index fails. It replays the eventlog
 to the certified value, checks that every event's digest derives from
@@ -1655,17 +1696,22 @@ R3 Pins depend on the mount tree
    The pins hold the links through the bpffs superblock. The guards of
    T2 cover unmounts of the bpffs and of mounts above it in ``init``'s
    namespace. A private copy of the tree in another namespace is any
-   process's to drop, which releases nothing. Legacy ``mount(2)`` with
-   ``MS_MOVE`` reaches ``lsm/sb_mount`` with the target only, so the
-   source mount is not checked (D8). ``pivot_root(2)`` is not hooked,
-   and ``mount_setattr(2)`` has no LSM hook at all, so root can change
-   mount attributes and propagation, making the bpffs read-only for
-   instance. A mount over ``/run`` or an ancestor hides the pins without
+   process's to drop, which releases nothing. On the pinned kernel,
+   ``mount_setattr(2)`` has no propagation hook, so root can change
+   mount attributes and propagation, making the bpffs read-only or the
+   mounts above it private for instance. A private parent no longer
+   lets the bpffs move: ``lsm/sb_mount`` refuses every legacy move in
+   that namespace and ``lsm/move_mount`` a move of the bpffs or of a
+   mount above it. A mount over ``/run`` or an ancestor hides the pins without
    releasing them: enforcement continues, ``shirudo status`` reports the
    LSM as not attached, and ``upatch load`` and ``upatch unload`` refuse
    ``tampered`` with the message ``lsm_detached`` in their pre-flight.
+   A second mount of the bpffs, which root binds with the legacy
+   ``mount(2)``, holds the same pins under the same guards, the one on
+   its unmount included: an unmount of it is refused as one of the first
+   is, so it stays for as long as the mount it sits on.
    The walk's bounds refuse every unmount of a tree they cannot cover.
-   Mitigation: D7.
+   Mitigations: D7, D11.
 
 R4 Config PCR writers are not authenticated
    The config PCR, one of 0 to 15 other than 9 and 11 chosen in the
@@ -1798,6 +1844,22 @@ R13 Revocation reaches a target only through a config
    measures a ``key_revoke`` event and then purges the key's upatches,
    each with an unload event. If that extension fails, the key stays
    unlinked, the revocation is unmeasured and the purge does not run.
+   The archive scan checks each signer under the register lock. An
+   archive that does not parse, is filed under another name than it
+   signs or carries no signer cannot be purged by key, so an activation
+   with revocation records checks every archive first, before it extends
+   the config PCR and again before it unlinks the first key, and refuses
+   without changing anything while one is there. An error that the check
+   could not foresee still fails the purge part-way, and the activation
+   stays pending. A boot activation does not make that check: it enrolls
+   no revoked key, so nothing such a key signed passes the signature
+   check of a restore, and an archive the purge cannot attribute is left
+   for the restore to ignore as long as nothing runs under its name. A
+   node boots with such an archive, less the upatch it held; a refusal
+   would fail ``init`` at every boot, with no command that removes the
+   file.
+   BPF loads require a complete CMS envelope, and the purge reads an
+   archived signature by the same rule.
    At boot the revoked key is not enrolled, and the init event's
    certificate list shows it. A target that has not activated the
    config still trusts the key. Historical vouches are U13.
@@ -1952,10 +2014,23 @@ R22 Labeled inodes are interchangeable
    decoy and undo the pins of a load still in flight in another, which
    then measures an upatch nothing runs. The register lock is the root
    of the private bpffs, which takes no mount and no entry from root, so
-   a command in any namespace waits for the same inode (``t6128``). The
-   bpm lock, ``locks/bpm.lock``, still rests on a label: two package or
-   tree commands under a decoy can interleave their own state, while
-   each step they measure still waits for the register lock.
+   a command in any namespace waits for the same inode (``t6128``).
+   BPM commands on an enforcing target lock the state
+   root directory itself. Init records its device and inode in the frozen
+   identity map before enforcement starts. BPM verifies both on the open
+   directory, which also has to carry the seal and reside outside bpffs.
+   Package install and upgrade stage the archive, extract the version,
+   read its certificate, load its members and unload the version they
+   replace relative to directories they open once below that root. The
+   digest they check is of the bytes the extraction reads, taken from
+   the descriptor that wrote them. Package uninstall opens its
+   directives and removes the package tree relative to held directory
+   descriptors. Those lookups reject mount crossings below the state
+   root, including binds on the same file system and one file bound over
+   another (``t7115``, ``t7116``). BPM reads and replaces its package
+   state file relative to the verified BPM directory as well. ``bpm tree
+   sync`` still names the artifact it checks and then loads by its path
+   in the cache.
 
 R23 Policy labels follow the inode
    A policy label is an xattr of the executable's inode, applied at
@@ -2216,10 +2291,6 @@ D7 Pins without the mount tree
    mount (R3), tracked in `issue 22
    <https://github.com/shirudo-dev/shirudo/issues/22>`__.
 
-D8 Legacy mount moves
-   Check the source of a legacy ``MS_MOVE`` (R3), tracked in `issue 12
-   <https://github.com/shirudo-dev/shirudo/issues/12>`__.
-
 D9 Perf events across exec
    Refuse task-bound perf events that a task opened before the exec
    that marks it (T3), tracked in `issue 11
@@ -2230,6 +2301,14 @@ D10 A payload type in the signed message
    signature made for a Java upatch verifies for nothing a BPF header
    can describe, and the reverse, without resting on the signed
    sections that follow (T15).
+
+D11 Propagation changes through the new mount API
+   The pivot and legacy propagation guards cover the initrd handoff (T2).
+   The pinned kernel still needs an LSM hook for propagation changes
+   through ``mount_setattr(2)``, including recursive changes. Compare
+   both interfaces when testing a kernel with that hook. See the
+   `propagation review on PR 213
+   <https://github.com/shirudo-dev/shirudo/pull/213#issuecomment-7111496290>`__.
 
 Out of scope
 ------------

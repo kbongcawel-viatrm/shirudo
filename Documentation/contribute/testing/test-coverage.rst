@@ -384,8 +384,9 @@ signed config image.
        ``verify``, ``predict`` and ``challenge``, a TPM reset. Runs in
        the register VM
    * - ``t4004-config-attest``
-     - Config activation in the evidence and its verification. Runs in
-       the register VM
+     - Config activation in the evidence and its verification. Tests both PCR
+       and NvPCR configurations, the qualifying data of the TPM signatures
+       and rejection of an incomplete snapshot. Runs in the register VM
    * - ``t4005-tpm-session``
      - Salted HMAC and policy sessions, ECC and RSA credential
        activation, rejected key pins, forged and replayed extension
@@ -413,7 +414,12 @@ signed config image.
    * - ``t4101-initrd``
      - The production configuration: ``init`` from the initrd, its
        messages in the journal once, adoption, PCR 11 after the binding,
-       pins under ``/run``
+       pins under ``/run``, a successful PID 1 pivot in the TPM guest,
+       shared propagation and unchanged boot mount tamper counts. A
+       task other than PID 1 may share the bpffs again and may not make
+       it private, through ``mount(2)``. Sharing a plain directory
+       under ``/run``, as ``ip netns add`` does, gets the kernel's
+       ``EINVAL`` and no ``BpffsMount`` count
    * - ``t4102-tpm-chain``
      - Replay, measured load and unload, evidence from the VM's TPM,
        challenges with ECC and RSA endorsement keys
@@ -478,6 +484,19 @@ signed config image.
        tracing and XDP upatches and their archives
    * - ``t5105-verity-interruption``
      - An interruption after measurement blocks changes and attestation
+   * - ``t5106-verity-revocation-boot``
+     - In ``functional/image-reboot/``, a VM of its own that boots
+       twice. A staged config that revokes a signer is activated by the
+       next boot from the initrd: the signer is not enrolled, the archive
+       of the upatch it signed is purged and not restored, and a load it
+       signed is refused
+   * - ``t5107-verity-revocation-archive``
+     - In ``functional/image-reboot/``, with ``t5106``. An archive cut
+       short, which no signer can be read from: a live update with
+       revocation records refuses and changes nothing, before the boot
+       and after it; the boot that revokes completes ``init`` and leaves
+       the file, its upatch is not restored, and ``status`` and the
+       keepalive show the smaller loaded set without a condition for it
 
 ``tamperproof`` (6)
 ~~~~~~~~~~~~~~~~~~~
@@ -667,6 +686,21 @@ signed config image.
    * - ``t6157-kernel-options``
      - The test kernel, which signs its modules, passes the pre-flight
        check of module signatures
+   * - ``t6158-bpffs-move-detach``
+     - The bpffs cannot be moved away and detached: a legacy ``MS_MOVE``
+       and a ``move_mount(2)`` of the bpffs, and of ``/run`` above it,
+       are refused and counted after ``mount_setattr(2)`` was asked to
+       make the parent private; a legacy propagation change on the
+       bpffs ancestry and a ``pivot_root`` in its namespace are
+       refused; a legacy move of an unrelated mount is refused
+       where ``move_mount(2)`` is not; the same changes in a private
+       mount namespace are harmless
+   * - ``t6159-bpffs-second-mount``
+     - A legacy ``MS_BIND`` gives the private bpffs a second mount point
+       in a mount namespace of root's. Through it a pin is not unlinked,
+       renamed or opened, and the second mount is not unmounted,
+       remounted or mounted over; each refusal is counted, and nothing
+       reaches the namespace of ``init``
 
 ``bpm`` (7)
 ~~~~~~~~~~~
@@ -679,7 +713,8 @@ signed config image.
      - Covers
    * - ``t7001-bpm-cli``
      - Subcommands, reference validation before network access, source
-       and tree configuration lines
+       and tree configuration lines, ``install``, ``upgrade`` and
+       ``uninstall`` refused without enforcement
    * - ``t7002-bpm-info``
      - READMEs of local and OCI packages, archive integrity, a download
        kept in a memory file rather than in ``/tmp``, one key
@@ -837,6 +872,21 @@ signed config image.
        reached through a link another user owns, or an auth file through
        a directory others can write that holds a link, is refused with
        its message before any request
+   * - ``t7115-bpm-package-uninstall``
+     - BPM installs a signed upatch from the fixture registry. With the
+       private bpffs bound over the package or its directives, or a
+       sealed directory bound over the directives, in a mount namespace
+       of root's, uninstall refuses and the pins, the archive and the
+       state stay. Without a bind it detaches the link and retires the
+       package tree, archive and state.
+   * - ``t7116-bpm-package-install``
+     - BPM installs a signed upatch from the fixture registry and keeps
+       the archive beside the version. With a sealed directory bound
+       over the staging directory or the package store, or the private
+       bpffs bound over the store, in a mount namespace of root's,
+       install refuses: neither the archive nor the version lands in
+       what the bind shows, nothing is loaded and no state is written.
+       Without a bind it installs again.
 
 ``otel`` (8)
 ~~~~~~~~~~~~
@@ -1005,8 +1055,9 @@ OCI registry. The macOS workflow checks the Lima template with
 Unit suites and fuzz targets
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The unit suites in :src:`testing/unit/` cover 42 of the modules in
-:src:`util/`: ``attest``, ``bpm_oci``, ``bpm_package``, ``bpm_state``,
+The unit suites in :src:`testing/unit/` cover 45 of the modules in
+:src:`util/`: ``attest``, ``bpm_cleanup``, ``bpm_install``, ``bpm_oci``,
+``bpm_package``, ``bpm_state``,
 ``bpm_tree``, ``bpm_tree_overlap``, ``bpm_tree_state``, ``chain``,
 ``chain_history``, ``conditions``, ``config_update``, ``crypto_openssl``,
 ``curl``, ``eventlog``, ``format``, ``hex``, ``identity``, ``io``,
@@ -1014,7 +1065,7 @@ The unit suites in :src:`testing/unit/` cover 42 of the modules in
 ``keepalive``, ``keepalive_quote``, ``kernel_build_id``,
 ``kernel_prereq``, ``kernel_release``, ``keys``, ``log``, ``measured``,
 ``options``,
-``paths``, ``report``, ``string``, ``sysinfo``, ``timefmt``, ``upatch``,
+``paths``, ``report``, ``seal``, ``string``, ``sysinfo``, ``timefmt``, ``upatch``,
 ``upatch_decode``, ``upatch_pins``, ``upatch_resolve``, ``upatch_verify``
 and ``xdp``, and
 ``overflow`` the arithmetic of
@@ -1186,7 +1237,8 @@ Coverage by area
        ``t6134``, ``t6135``, ``t6136``, ``t6137``
    * - Keyrings
      - ``t2101``, ``t2102``, ``t2103``, ``t5101``, ``t5104``,
-       ``t6004``, ``t6104``, ``t6112``, ``t6129``, ``t6140``
+       ``t5106``, ``t5107``, ``t6004``, ``t6104``, ``t6112``, ``t6129``,
+       ``t6140``
    * - Signing keys and the trusted set
      - ``t2001``, ``t2002``, ``t2003``, ``t2004``, ``t2005``,
        ``t5003``. Unit: ``io``
@@ -1270,7 +1322,7 @@ The threats are those of :doc:`/security/threat-model`.
    * - T2 Detaching or replacing enforcement
      - ``t6101``, ``t6105``, ``t6106``, ``t6107``, ``t6108``,
        ``t6109``, ``t6116``, ``t6119``, ``t6120``, ``t6121``,
-       ``t6138``
+       ``t6138``, ``t6159``
    * - T3 Tampering with shirudo's files and process
      - ``t6001``, ``t6006``, ``t6007``, ``t6110``, ``t6111``,
        ``t6112``, ``t6114``, ``t6115``, ``t6118``, ``t6123``,
@@ -1294,7 +1346,7 @@ The threats are those of :doc:`/security/threat-model`.
      - ``t4001``, ``t4003``, ``t4004``, ``t4102``, ``t9105``, ``t9112``
    * - T10 An attempt that leaves no trace
      - ``t6003``, ``t6108``, ``t6118``, ``t6119``, ``t6120``,
-       ``t6121``, ``t6124``, ``t6126``, ``t6135``, ``t6137``
+       ``t6121``, ``t6124``, ``t6126``, ``t6135``, ``t6137``, ``t6158``
    * - T11 Image-mode config and executable substitution
      - ``t5001``, ``t5002``, ``t5003``, ``t5006``, ``t5008``,
        ``t5101``, ``t5102``, ``t5103``, ``t5104``, ``t6112``,
@@ -1315,11 +1367,14 @@ tests assert that a refusal moves its counter:
 
    * - Counter
      - Test
-   * - ``LoadNotLoader``, ``ProgAttach``, ``ObjPin``, ``ObjGet``,
-       ``BpfCommand``, ``PinUnlink``, ``PinRename``, ``BpffsUmount``
+   * - ``LoadNotLoader``, ``ProgAttach``, ``ObjPin``, ``BpfCommand``
      - ``t6108``
+   * - ``ObjGet``, ``PinUnlink``, ``PinRename``, ``BpffsUmount``
+     - ``t6108``, ``t6159``
    * - ``BpffsUmountAbove``
-     - ``t6120``, ``t6155``
+     - ``t6120``, ``t6155``, ``t6158``
+   * - ``BpffsMount``
+     - ``t6158``, ``t6159``
    * - ``PinEntry``
      - ``t6121``
    * - ``PerfAttach``
@@ -1458,7 +1513,7 @@ Tamper counters
 No test asserts that a refusal moves ``LoadUnsigned``,
 ``LoadUnverified``, ``LoadKeyringKind``, ``LoadKeyring``, ``MapCreate``,
 ``MapWrite``, ``MapFdWrite``, ``ProgRun``, ``ExeIdentity``,
-``KeyringWrite``, ``PinXattr``, ``BpffsMount``, ``SealWrite``,
+``KeyringWrite``, ``PinXattr``, ``SealWrite``,
 ``SealUnlink``, ``SealRename``, ``SealSetattr``, ``SealXattr``,
 ``SealLabel``, ``SealPerf`` or ``TpmExtend``. The refusals behind
 several of them are tested, the counter is not.

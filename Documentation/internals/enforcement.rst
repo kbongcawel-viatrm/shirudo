@@ -55,7 +55,8 @@ The objects share eight maps, which ``init`` hands from ``bpf2`` to
    * - ``shirudo_bpffs_sb``
      - ``identity``
      - The record ``init`` freezes: device numbers of the private bpffs
-       and of ``/run/shirudo``, the runtime root hash, the ``.bpf``
+       and of ``/run/shirudo``, the state root device and inode, the runtime
+       root hash, the ``.bpf``
        keyring serial and kind, the serials of the enrolled keys, the
        ``.dm-verity`` keyring and key serials, the NV index, the NV
        writer's public modulus and seed, and the ECC endorsement key
@@ -66,6 +67,11 @@ The objects share eight maps, which ``init`` hands from ``bpf2`` to
    * - ``shirudo_tasks``
      - ``task_authority``
      - Task storage with each task's mark and exec candidate.
+   * - ``shirudo_unlink_grant``
+     - ``unlink_grant``
+     - Task storage for the inode number of one open upatch directory
+       in the private bpffs. A grant lasts until release, removal of
+       that directory, successful exec or task exit.
    * - ``shirudo_task_policy``
      - ``task_policy``
      - Task storage with committed policy bits and the exec candidate.
@@ -380,9 +386,13 @@ Hooks in bpf2
        it, which the kernel would detach or move in every namespace.
      - ``EPERM``. In the bpffs: ``PinUnlink``, ``PinEntry``
        (mkdir, symlink, link), ``PinRename``, ``PinXattr``. A mount
-       point: ``BpffsUmountAbove``. Rmdir and ``/run/shirudo``
-       uncounted
-     - Closed for those two file systems.
+       point: ``BpffsUmountAbove``. Rmdir by a runtime task outside its
+       grant counts as ``PinUnlink``.
+     - On the private bpffs a runtime task also needs a per-task grant
+       to unlink or remove an upatch directory or its children. The
+       ioctl hooks issue and release the grant on the open directory.
+       Removing that directory or committing an exec clears it.
+       Renames are refused after bootstrap.
    * - ``lsm/sb_umount``
      - To every caller: unmounting the bpffs, an unmount whose subtree or
        propagation reaches the recorded bpffs mount, unmounting
@@ -390,20 +400,39 @@ Hooks in bpf2
        config image to a task without authority.
      - ``EPERM``: ``BpffsUmount``, ``BpffsUmountAbove``; image
        and ``/run/shirudo`` refusals uncounted
-     - Closed: a walk beyond 1024 mounts, 32 levels or 4 masters is
-       refused.
+     - Host PID 1 may detach the recorded initrd root once a matching
+       bpffs mount survives on the target root. A walk beyond 1024
+       mounts, 32 levels or 4 masters is refused.
+   * - ``lsm/sb_pivotroot``
+     - To every caller: a pivot in the namespace containing the recorded
+       bpffs. Host PID 1 may pivot from the recorded initrd root to the
+       recorded target root. That exception ends with the handoff, and
+       PID 1's later pivots are refused like any other: a return to
+       ``/run/initramfs`` at shutdown and a soft reboot into
+       ``/run/nextroot``, see :doc:`/operate/plan/interoperability`.
+     - ``EPERM`` and ``BpffsUmountAbove``.
+     - A pivot in another mount namespace proceeds.
    * - ``lsm/move_mount``
      - To every caller: moving the bpffs, the ``/run/shirudo`` mount or
        the runtime image, or moving a mount onto the bpffs or the runtime
-       image. Moving a mount onto a path in ``/run/shirudo``, and moving
-       a config image or onto one, to a task without authority.
+       image. Moving a mount above the bpffs, which takes the bpffs
+       along, to every caller but host PID 1 on the initrd root. Moving
+       a mount onto a path in ``/run/shirudo``, and moving a config
+       image or onto one, to a task without authority.
      - ``EPERM``: ``BpffsMount``; others uncounted
      - Closed.
    * - ``lsm/sb_mount``
-     - To every caller: a mount onto the bpffs or the runtime image, and
-       a propagation change of the ``/run/shirudo`` mount. A mount onto a
+     - A mount onto the bpffs or runtime image. A legacy propagation
+       change on the bpffs or its ancestry other than to shared, which
+       every caller may request, with the host PID 1 exception for the
+       initrd handoff. A legacy ``MS_MOVE`` onto any mount of the
+       recorded bpffs's mount namespace, which reaches the hook without
+       its source, with the same PID 1 exception; ``move_mount(2)``
+       moves a mount there. After the handoff the exception is over, and
+       PID 1's request to make ``/`` private at shutdown or for a soft
+       reboot is refused. A mount onto a
        path in ``/run/shirudo`` or on a config image to a task without
-       authority. The source of a bind or legacy move is not checked.
+       authority. The source of a bind is not checked.
      - ``EPERM``: ``BpffsMount``; others uncounted
      - Closed.
    * - ``lsm/sb_remount``
@@ -628,9 +657,9 @@ The hooks decide only what reaches them. These paths do not:
   ``lsm/file_ioctl`` refuse the ``bpf()`` attach commands and the perf
   ioctl to tasks without authority; other kernel interfaces that take a
   program descriptor are not hooked here.
-- ``mount_setattr(2)`` has no LSM hook, ``pivot_root(2)`` is not hooked,
-  and ``lsm/sb_mount`` does not check the source of a bind or legacy
-  move.
+- On the pinned kernel, propagation changes through ``mount_setattr(2)``
+  have no LSM hook. The source of a bind or legacy move is absent from
+  ``lsm/sb_mount``, which refuses the legacy move for that reason.
 - A perf event bound to a task before that task execs the runtime image
   survives the exec, and CPU-wide events and probes on the runtime
   binary are not checked.

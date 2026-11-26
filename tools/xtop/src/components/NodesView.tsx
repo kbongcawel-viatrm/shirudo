@@ -15,6 +15,7 @@ import {
   healthPercent,
   imageLabel,
   labelPairs,
+  treeSortKey,
   type FleetNode,
   type FleetReport,
   type ImageGroup,
@@ -72,15 +73,10 @@ function ExposedCell({ exposed, unknown }: { exposed: number; unknown: number })
   );
 }
 
-function TreeCell({ last, head, atLeast = false }: { last: number | null; head: number | null; atLeast?: boolean }) {
+function TreeCell({ last, head }: { last: number | null; head: number | null }) {
   if (last === null) return <Text dimColor>no tree</Text>;
   if (head === null) return <Text dimColor>#{last}</Text>;
-  if (last < head)
-    return (
-      <Text color="yellow">
-        {atLeast ? "≥" : ""}#{last}/#{head}
-      </Text>
-    );
+  if (last < head) return <Text color="yellow">#{last}/#{head}</Text>;
   return <Text color="green">✓ #{head}</Text>;
 }
 
@@ -132,7 +128,7 @@ const NODE_COLUMNS: readonly Column<FleetNode>[] = [
     title: "TREE",
     width: 10,
     defaultDir: "asc",
-    sortKey: (n) => (n.tree.lastSeq === null ? -1 : n.tree.lastSeq - (n.tree.headSeq ?? n.tree.lastSeq)),
+    sortKey: (n) => treeSortKey(n.tree),
     render: (n) => <TreeCell last={n.tree.lastSeq} head={n.tree.headSeq} />,
   },
   { id: "shields", title: "SHIELDS", width: 12, defaultDir: "desc", sortKey: (n) => shieldsKey(n.shields), render: (n) => <ShieldsCell s={n.shields} /> },
@@ -220,8 +216,8 @@ const IMAGE_COLUMNS: readonly Column<ImageGroup>[] = [
     title: "TREE",
     width: 11,
     defaultDir: "asc",
-    sortKey: (g) => (g.tree.minLastSeq === null ? -1 : g.tree.minLastSeq - (g.tree.headSeq ?? g.tree.minLastSeq)),
-    render: (g) => <TreeCell last={g.tree.minLastSeq} head={g.tree.headSeq} atLeast />,
+    sortKey: (g) => treeSortKey(g.tree),
+    render: (g) => <TreeCell last={g.tree.lastSeq} head={g.tree.headSeq} />,
   },
   { id: "shields", title: "SHIELDS", width: 12, defaultDir: "desc", sortKey: (g) => shieldsKey(g.shields), render: (g) => <ShieldsCell s={g.shields} /> },
   {

@@ -93,7 +93,6 @@ pack_header(struct upatch_header *h,
 	    const __u8 *payload_sha256,
 	    __u32 loader_off, __u32 loader_len,
 	    __u32 sig_off, __u32 sig_len,
-	    __u32 meta_off, __u32 meta_len,
 	    __u32 data_off, __u32 data_len,
 	    __u32 log_buf_sz,
 	    __u32 rodata_data_off, __u32 nr_maps, __u32 nr_progs)
@@ -110,8 +109,6 @@ pack_header(struct upatch_header *h,
 	h->loader_insns_len = cpu_to_le32(loader_len);
 	h->signature_off    = cpu_to_le32(sig_off);
 	h->signature_len    = cpu_to_le32(sig_len);
-	h->metadata_off     = cpu_to_le32(meta_off);
-	h->metadata_len     = cpu_to_le32(meta_len);
 	h->data_off         = cpu_to_le32(data_off);
 	h->data_len         = cpu_to_le32(data_len);
 	h->log_buf_sz       = cpu_to_le32(log_buf_sz);
@@ -189,10 +186,9 @@ static int package_resign_symbols(const char *original,
 	const __u8 *src_data, *mod_data;
 	bool range_found[16] = {};
 	char name[UPATCH_NAME_MAX + 1];
-	__u32 loader_off, sig_off, data_off, meta_off;
+	__u32 loader_off, sig_off, data_off, end;
 	__u8 *sig_buf = NULL;
 	size_t i, j;
-	__u64 total;
 	bool wrote = false;
 	int fd = -1;
 	int ret;
@@ -215,14 +211,10 @@ static int package_resign_symbols(const char *original,
 	    src.hdr.loader_insns_len != mod.hdr.loader_insns_len ||
 	    src.hdr.signature_len != mod.hdr.signature_len ||
 	    src.hdr.data_len != mod.hdr.data_len ||
-	    src.hdr.metadata_len != mod.hdr.metadata_len ||
 	    memcmp(upatch_loader(&src), upatch_loader(&mod),
 		   src.hdr.loader_insns_len) ||
 	    memcmp(upatch_signature(&src), upatch_signature(&mod),
-		   src.hdr.signature_len) ||
-	    (src.hdr.metadata_len &&
-	     memcmp(upatch_metadata(&src), upatch_metadata(&mod),
-		    src.hdr.metadata_len))) {
+		   src.hdr.signature_len)) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -291,12 +283,11 @@ static int package_resign_symbols(const char *original,
 	loader_off = sizeof(hdr);
 	if (check_add_overflow(loader_off, sio.insns_sz, &sig_off) ||
 	    check_add_overflow(sig_off, sio.signature_sz, &data_off) ||
-	    check_add_overflow(data_off, sio.data_sz, &meta_off)) {
+	    check_add_overflow(data_off, sio.data_sz, &end)) {
 		ret = -EOVERFLOW;
 		goto out;
 	}
-	total = (__u64)meta_off + mod.hdr.metadata_len;
-	if (total > UPATCH_FILE_MAX) {
+	if (end > UPATCH_FILE_MAX) {
 		ret = -E2BIG;
 		goto out;
 	}
@@ -305,8 +296,6 @@ static int package_resign_symbols(const char *original,
 			  sio.payload_sha256,
 			  loader_off, (__u32)sio.insns_sz,
 			  sig_off, (__u32)sio.signature_sz,
-			  mod.hdr.metadata_len ? meta_off : 0,
-			  mod.hdr.metadata_len,
 			  sio.data_sz ? data_off : 0, (__u32)sio.data_sz,
 			  mod.hdr.log_buf_sz, mod.hdr.rodata_data_off,
 			  mod.hdr.nr_maps, mod.hdr.nr_progs);
@@ -329,8 +318,6 @@ static int package_resign_symbols(const char *original,
 		ret = write_complete(fd, sig_buf, sio.signature_sz);
 	if (!ret && sio.data_sz)
 		ret = write_complete(fd, sio.data, sio.data_sz);
-	if (!ret && mod.hdr.metadata_len)
-		ret = write_complete(fd, upatch_metadata(&mod), mod.hdr.metadata_len);
 	if (!ret && fsync(fd) != 0)
 		ret = -errno;
 out:
@@ -2186,7 +2173,6 @@ static int finalize_object(struct bpf_object *obj, const char *out_path,
 			  sio.payload_sha256,
 			  loader_off, opts.insns_sz,
 			  sig_off, (__u32)sio.signature_sz,
-			  0, 0,
 			  data_off, data_len,
 			  1u * 1024u * 1024u,
 			  rodata_data_off, nr_maps, nr_progs);
@@ -2463,7 +2449,7 @@ static int finalize_java(const char *out_path, const char *upatch_name,
 	}
 	err = pack_header(&hdr, upatch_name, UPATCH_TYPE_JAVA, flags,
 			  sio.payload_sha256, 0, 0,
-			  (__u32)sizeof(hdr), (__u32)sio.signature_sz, 0, 0,
+			  (__u32)sizeof(hdr), (__u32)sio.signature_sz,
 			  data_off, signed_data_len, 0, 0, 0, 0);
 	if (!err)
 		err = write_artifact(out_path, &hdr, NULL, 0, sig_buf,

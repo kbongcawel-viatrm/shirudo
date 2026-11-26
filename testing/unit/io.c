@@ -147,6 +147,19 @@ static void bpffs_mounted_at_wants_the_root_of_a_bpffs(void)
 	EXPECT_EQ(bpffs_mounted_at("/dev/null"), -ENOTDIR);
 }
 
+static void open_beneath_same_mount_stops_at_proc(void)
+{
+	int root = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	int fd;
+
+	ASSERT_TRUE(root >= 0);
+	fd = open_beneath(root, "proc", O_RDONLY | O_DIRECTORY);
+	ASSERT_TRUE(fd >= 0);
+	close(fd);
+	EXPECT_EQ(open_beneath_same_mount(root, "proc", O_RDONLY | O_DIRECTORY), -EXDEV);
+	close(root);
+}
+
 static int etc_fd = -1;
 
 static int remove_entry(const char *path, const struct stat *st, int type,
@@ -592,6 +605,52 @@ static void check_trusted_follows_its_prefix_linked_elsewhere(void)
 	remove_etc();
 }
 
+static void open_beneath_same_mount_refuses_a_bind(void)
+{
+	char source[PATH_MAX], alias[PATH_MAX];
+	int fd;
+
+	need_root("needs root for a private bind mount");
+	if (unshare(CLONE_NEWNS))
+		unit_skip("cannot make a mount namespace");
+	ASSERT_EQ(mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL), 0);
+	make_etc();
+	make_dir("source", 0700);
+	make_dir("alias", 0700);
+	ASSERT_TRUE(strsprintf(source, sizeof(source), "%s/source", etc_dir) > 0);
+	ASSERT_TRUE(strsprintf(alias, sizeof(alias), "%s/alias", etc_dir) > 0);
+	ASSERT_EQ(mount(source, alias, NULL, MS_BIND, NULL), 0);
+	fd = open_beneath(etc_fd, "alias", O_RDONLY | O_DIRECTORY);
+	ASSERT_TRUE(fd >= 0);
+	close(fd);
+	EXPECT_EQ(open_beneath_same_mount(etc_fd, "alias", O_RDONLY | O_DIRECTORY), -EXDEV);
+	ASSERT_EQ(umount(alias), 0);
+	remove_etc();
+}
+
+static void create_beneath_same_mount_makes_one_new_file(void)
+{
+	struct stat st;
+	int fd;
+
+	make_etc_in("/tmp");
+	fd = create_beneath_same_mount(etc_fd, "new", O_WRONLY, 0600);
+	ASSERT_TRUE(fd >= 0);
+	ASSERT_EQ(fstat(fd, &st), 0);
+	EXPECT_EQ(st.st_mode & 07777, 0600);
+	close(fd);
+	EXPECT_EQ(create_beneath_same_mount(etc_fd, "new", O_WRONLY, 0600),
+		  -EEXIST);
+	EXPECT_EQ(create_beneath_same_mount(etc_fd, "../new", O_WRONLY, 0600),
+		  -EXDEV);
+	/* A link under the name is in the way, and its target is not made. */
+	ASSERT_EQ(symlinkat("missing", etc_fd, "link"), 0);
+	EXPECT_EQ(create_beneath_same_mount(etc_fd, "link", O_WRONLY, 0600),
+		  -EEXIST);
+	EXPECT_EQ(faccessat(etc_fd, "missing", F_OK, 0), -1);
+	remove_etc();
+}
+
 /* The same, the directory linked to on a file system of its own. */
 static void check_trusted_follows_its_prefix_onto_another_mount(void)
 {
@@ -827,6 +886,9 @@ static void read_file_takes_a_file_renamed_over_or_refuses_it(void)
 }
 
 static const struct unit_case cases[] = {
+	UNIT_CASE(open_beneath_same_mount_stops_at_proc),
+	UNIT_CASE(open_beneath_same_mount_refuses_a_bind),
+	UNIT_CASE(create_beneath_same_mount_makes_one_new_file),
 	UNIT_CASE(lines_len_ends_at_the_last_newline),
 	UNIT_CASE(append_line_adds_one_record),
 	UNIT_CASE(append_line_drops_what_did_not_finish),

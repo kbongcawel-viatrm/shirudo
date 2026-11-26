@@ -241,10 +241,10 @@ or shorter, and "lengths 0 to 6" every input of each of those lengths.
      - Header lines up to 26 bytes, NULs included, with the line's copy
        and the challenge's field set to 24 and 4 bytes for their 4096
        and 2048
-     - The whole line taken, and one too long for the copy or holding a
-       NUL read not at all; values terminated, without a leading blank,
-       a location without CR or LF; a challenge that fits kept whole, a
-       longer one dropped rather than cut
+     - A new HTTP response clears the previous challenge and location.
+       Other lines too long for the copy or containing a NUL are ignored.
+       Values are terminated and leading blanks skipped. A location has
+       no CR or LF. A challenge must fit in full.
    * - ``bpm-oci-buffer``
      - ``bpm_buffer_append()``
      - A buffer of 0, 3, 8, 12 and 15 bytes holding any shorter body,
@@ -609,7 +609,7 @@ or shorter, and "lengths 0 to 6" every input of each of those lengths.
      - Every file: the header is read from a buffer of exactly its size
        for files of any size
      - Reads nothing past the header; an accepted header has its magic,
-       version, zero reserved field and a terminated name, a BPF or Java
+       version, zero reserved fields and a terminated name, a BPF or Java
        payload, a signature, every section inside the file and behind
        the header; a BPF payload has a loader of whole aligned
        instructions and a ``.rodata`` offset inside the data, a Java
@@ -1617,7 +1617,8 @@ a proof covers.
 
    * - Files
      - Why no proof reads them
-   * - :src:`util/harden.c`, :src:`util/identity.c`,
+   * - :src:`util/bpm_cleanup.c`, :src:`util/bpm_install.c`,
+       :src:`util/harden.c`, :src:`util/identity.c`,
        :src:`util/image_cache.c`, :src:`util/image_config.c`,
        :src:`util/image_guards.c`, :src:`util/image_keys.c`,
        :src:`util/image_runtime.c`, :src:`util/initrd.c`,

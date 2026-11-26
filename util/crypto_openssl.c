@@ -353,6 +353,25 @@ int cert_not_before(const struct cert *cert, char out[11])
 	return asn1_date(X509_get0_notBefore(cert->impl), out);
 }
 
+static bool cms_has_signers(CMS_ContentInfo *cms)
+{
+	const struct stack_st_CMS_SignerInfo *signers = CMS_get0_SignerInfos(cms);
+	int count = sk_CMS_SignerInfo_num(signers);
+	int i;
+
+	for (i = 0; i < count; i++) {
+		CMS_SignerInfo *si = sk_CMS_SignerInfo_value(signers, i);
+		ASN1_OCTET_STRING *key = NULL;
+		ASN1_INTEGER *serial = NULL;
+		X509_NAME *issuer = NULL;
+
+		if (!CMS_SignerInfo_get0_signer_id(si, &key, &issuer, &serial) ||
+		    (key ? ASN1_STRING_length(key) <= 0 : !issuer || !serial))
+			return false;
+	}
+	return count > 0;
+}
+
 static CMS_ContentInfo *read_cms(const __u8 *signature, size_t len)
 {
 	const __u8 *next = signature;
@@ -361,7 +380,7 @@ static CMS_ContentInfo *read_cms(const __u8 *signature, size_t len)
 	if (!signature || !len || len > INT_MAX)
 		return NULL;
 	cms = d2i_CMS_ContentInfo(NULL, &next, (long)len);
-	if (cms && next != signature + len) {
+	if (cms && (next != signature + len || !cms_has_signers(cms))) {
 		CMS_ContentInfo_free(cms);
 		cms = NULL;
 	}
@@ -409,6 +428,18 @@ done:
 	BIO_free(out);
 	BIO_free(data);
 	return ret;
+}
+
+int cms_check_signers(const __u8 *signature, size_t len)
+{
+	CMS_ContentInfo *cms = read_cms(signature, len);
+
+	if (!cms) {
+		ERR_clear_error();
+		return -EBADMSG;
+	}
+	CMS_ContentInfo_free(cms);
+	return 0;
 }
 
 int cms_signed_by(const __u8 *signature, size_t signature_len,

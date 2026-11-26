@@ -8,7 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import { toFleetNode, toFleetReport, type NodeRow } from "../src/lib/backend.ts";
 import { configFromEnv, queryRows } from "../src/lib/clickhouse.ts";
-import { failedCheckName, groupByImage, healthPercent, imageLabel, labelPairs } from "../src/lib/fleet.ts";
+import { failedCheckName, groupByImage, healthPercent, imageLabel, labelPairs, treeSortKey } from "../src/lib/fleet.ts";
 
 const BUILD = "d6d918ad22ff597579e6678bef75adca84d30f9661e0b7bbdbf534eebc138c1f";
 const LOG = [
@@ -211,10 +211,10 @@ describe("groupByImage", () => {
 
   test("rolls up kernel, tree, shields and exposure", () => {
     expect(fleetOs.kernel).toBe("7.4.2");
-    expect(fleetOs.tree).toEqual({ minLastSeq: 2, headSeq: 3 });
+    expect(fleetOs.tree).toEqual({ lastSeq: 2, headSeq: 3 });
     expect(fleetOs.shields).toEqual({ applied: 2, pending: 0, idle: 2 });
     expect(fleetOs.exposed).toBe(2);
-    expect(none.tree).toEqual({ minLastSeq: null, headSeq: null });
+    expect(none.tree).toEqual({ lastSeq: null, headSeq: null });
     expect(none.unknown).toBe(1);
   });
 
@@ -226,6 +226,89 @@ describe("groupByImage", () => {
   test("reports a mixed kernel as null", () => {
     const mixed = groupByImage([toFleetNode(ROWS[0]!), toFleetNode(row({ ak_name: "x", kernel_release: "7.5.0" }))]);
     expect(mixed[0]!.kernel).toBeNull();
+  });
+
+  test("reports the tree of the member furthest behind, never a mixed pair", () => {
+    const member = (over: Partial<NodeRow>) => toFleetNode(row({ ...over }));
+    // Two members on independent trees, each at its own head: caught up.
+    const heads = groupByImage([
+      member({ ak_name: "000b001", last_seq: 3, head_seq: 3 }),
+      member({ ak_name: "000b002", last_seq: 8, head_seq: 8 }),
+    ]);
+    expect(heads[0]!.tree).toEqual({ lastSeq: 3, headSeq: 3 });
+    // A member a step behind its tree reports its real position.
+    const behind = groupByImage([
+      member({ ak_name: "000b001", last_seq: 2, head_seq: 3 }),
+      member({ ak_name: "000b002", last_seq: 8, head_seq: 8 }),
+    ]);
+    expect(behind[0]!.tree).toEqual({ lastSeq: 2, headSeq: 3 });
+    // A member without a tree does not hide the position of one that has it.
+    const mixed = groupByImage([
+      member({ ak_name: "000b001", generation: null, last_seq: null, head_seq: null }),
+      member({ ak_name: "000b002", last_seq: 5, head_seq: 5 }),
+    ]);
+    expect(mixed[0]!.tree).toEqual({ lastSeq: 5, headSeq: 5 });
+  });
+
+  test("reports a member with an unknown head before the caught-up ones", () => {
+    const member = (over: Partial<NodeRow>) => toFleetNode(row({ ...over }));
+    // The caught-up member has the smaller last, which the tie-break prefers.
+    const unknown = groupByImage([
+      member({ ak_name: "000b001", last_seq: 3, head_seq: 3 }),
+      member({ ak_name: "000b002", last_seq: 7, head_seq: null }),
+    ]);
+    expect(unknown[0]!.tree).toEqual({ lastSeq: 7, headSeq: null });
+    // A member known to be behind still comes first, in either order.
+    const behind = groupByImage([
+      member({ ak_name: "000b001", last_seq: 7, head_seq: null }),
+      member({ ak_name: "000b002", last_seq: 2, head_seq: 3 }),
+      member({ ak_name: "000b003", last_seq: 5, head_seq: 5 }),
+    ]);
+    expect(behind[0]!.tree).toEqual({ lastSeq: 2, headSeq: 3 });
+    // Among unknown heads the smaller last, as among known ones.
+    const both = groupByImage([
+      member({ ak_name: "000b001", last_seq: 7, head_seq: null }),
+      member({ ak_name: "000b002", last_seq: 4, head_seq: null }),
+    ]);
+    expect(both[0]!.tree).toEqual({ lastSeq: 4, headSeq: null });
+  });
+});
+
+describe("a member past its head", () => {
+  const member = (over: Partial<NodeRow>) => toFleetNode(row({ ...over }));
+
+  test("is at it: reported after a member with an unknown head", () => {
+    const g = groupByImage([
+      member({ ak_name: "000b001", last_seq: 5, head_seq: 3 }),
+      member({ ak_name: "000b002", last_seq: 7, head_seq: null }),
+    ]);
+    expect(g[0]!.tree).toEqual({ lastSeq: 7, headSeq: null });
+  });
+
+  test("sorts with the rows at their head", () => {
+    expect(treeSortKey({ lastSeq: 5, headSeq: 3 })).toBe(0);
+  });
+});
+
+describe("treeSortKey", () => {
+  const sorted = (trees: { lastSeq: number | null; headSeq: number | null }[]) =>
+    [...trees].sort((a, b) => treeSortKey(a) - treeSortKey(b) || 0);
+
+  test("keeps the rows without a tree apart from those one step behind", () => {
+    const none = { lastSeq: null, headSeq: null };
+    const one = { lastSeq: 2, headSeq: 3 };
+    const far = { lastSeq: 1, headSeq: 9 };
+    const head = { lastSeq: 5, headSeq: 5 };
+    expect(treeSortKey(none)).toBeLessThan(treeSortKey(far));
+    expect(sorted([one, none, head, far, none, one])).toEqual([none, none, far, one, one, head]);
+  });
+
+  test("sorts an unknown head between the rows behind and those at their head", () => {
+    const unknown = { lastSeq: 7, headSeq: null };
+    const one = { lastSeq: 2, headSeq: 3 };
+    const head = { lastSeq: 5, headSeq: 5 };
+    expect(sorted([head, unknown, one, head])).toEqual([one, unknown, head, head]);
+    expect(treeSortKey(head)).toBe(0);
   });
 });
 

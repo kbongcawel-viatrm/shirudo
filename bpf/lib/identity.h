@@ -25,6 +25,8 @@ struct sb_id {
 	__s32	dm_verity_keys[IDENTITY_KEYS_MAX];
 	__u32	nv_index;
 	__u32	config_pcr;
+	__u64	state_dev;
+	__u64	state_ino;
 };
 
 struct {
@@ -38,6 +40,9 @@ struct {
 /* The bpffs mount of init's namespace, as the unmount guard keeps it. */
 struct mount_record {
 	__u64	mount;
+	__u64	mount_ns;
+	__u64	initrd_root_id;
+	__u64	sysroot_id;
 };
 
 struct {

@@ -269,6 +269,8 @@ UTIL_SRCS := \
     util/bpm_tree_state.c \
     util/bpm_oci.c \
     util/curl.c \
+    util/bpm_cleanup.c \
+    util/bpm_install.c \
     util/bpm_package.c \
     util/bpm_state.c \
     util/kconfig.c \
@@ -496,6 +498,8 @@ bpf/%.bpf.o: bpf/%.c $(VMLINUX_H) $(BPF_LIBBPF_HEADERS) \
 	$(Q)$(CLANG_BPF) -Iinclude -Ibpf/lib -I$(dir $(VMLINUX_H)) -I$(LIBBPF_VENDOR) \
 	    -I$(BPF_UAPI_INCLUDE) \
 	    -c $< -o $@
+
+bpf/bpf2.bpf.o build/unit/identity: include/shirudo/pin_grant.h
 
 # ----- version_id ------------------------------------------------
 

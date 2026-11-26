@@ -833,13 +833,67 @@ static int measure_revoke(const struct trusted_cert *c,
 	return ret;
 }
 
+/* The upatch name an archive is filed under; scandir selected the suffix. */
+static int archive_upatch_name(const char *file, char name[UPATCH_NAME_MAX + 1])
+{
+	size_t len = strlen(file) - strlen(".upatch");
+
+	if (span_to_str(name, UPATCH_NAME_MAX + 1, file, len) ||
+	    !upatch_name_valid(name))
+		return -EINVAL;
+	return 0;
+}
+
+/*
+ * A revocation purges what its key signed, and cannot say what that is
+ * while one archive names no signer. Unlinking a key and measuring it
+ * are not undone, so every archive is checked before the first of them.
+ */
+int keys_revoke_check(void)
+{
+	struct dirent **names = NULL;
+	int n, i, ret = 0;
+
+	n = scandir(UPATCHES_DIR, &names, upatch_select, alphasort);
+	if (n < 0)
+		return errno == ENOENT ? 0 : -errno;
+	for (i = 0; i < n; i++) {
+		char name[UPATCH_NAME_MAX + 1];
+		int err;
+
+		err = archive_upatch_name(names[i]->d_name, name);
+		if (err) {
+			pr_err("keys revoke: invalid archive filename");
+		} else {
+			/* An unload since the scan left nothing to attribute. */
+			err = upatch_purge_check(name);
+			if (err == UPATCH_PURGE_NO_ARCHIVE)
+				err = 0;
+			if (err)
+				pr_err("keys revoke: %s.upatch names no signer: %s; nothing revoked",
+				       name, strerror(-err));
+		}
+		if (err && !ret)
+			ret = err;
+		libc_free(names[i]);
+	}
+	libc_free(names);
+	return ret;
+}
+
 /*
  * Every archived upatch the revoked certificate signed goes: the kernel
  * would refuse to restore it at the next boot, and keeping it loaded
  * would keep running what a key nobody trusts any more authorised. The
  * rest are still tried when one fails.
+ *
+ * A boot enrolls no revoked key, so the kernel loads nothing one signed
+ * and boot-restore is left to ignore an archive that names no signer.
+ * Refusing it would fail every boot, with no command to remove the file.
+ * Live, the key was trusted until now and such an archive fails the
+ * revocation, as keys_revoke_check() says before anything changed.
  */
-static int purge_signed_by(const __u8 *der, size_t der_sz,
+static int purge_signed_by(const __u8 *der, size_t der_sz, bool boot,
 			   size_t *unloaded)
 {
 	struct cert cert = {};
@@ -852,32 +906,35 @@ static int purge_signed_by(const __u8 *der, size_t der_sz,
 	n = scandir(UPATCHES_DIR, &names, upatch_select,
 		    alphasort);
 	if (n < 0) {
+		ret = errno == ENOENT ? 0 : -errno;
 		cert_free(&cert);
-		return errno == ENOENT ? 0 : -errno;
+		return ret;
 	}
 	for (i = 0; i < n; i++) {
 		char name[UPATCH_NAME_MAX + 1];
-		struct upatch u;
-		char path[PATH_MAX];
-		int signed_by, prc;
+		int prc;
 
-		if (strsprintf(path, sizeof(path), "%s/%s", UPATCHES_DIR,
-			       names[i]->d_name) < 0)
+		if (archive_upatch_name(names[i]->d_name, name)) {
+			pr_err("keys revoke: invalid archive filename");
+			ret = -EINVAL;
 			continue;
-		if (upatch_open(path, &u))
-			continue;
-		signed_by = cms_signed_by(upatch_signature(&u),
-					  u.hdr.signature_len, &cert);
-		upatch_header_name(&u, name);
-		upatch_close(&u);
-		if (signed_by != 1)
-			continue;
+		}
+		/*
+		 * Attribute the open archive under the lock, even if its
+		 * previous contents were replaced. One an unload took since
+		 * the scan has nothing left to purge.
+		 */
 		prc = upatch_purge(name, &cert, "key_revoke");
-		if (prc == -ESTALE) {
-			pr_info("keys revoke: %s was replaced by an upatch the key did not sign; left alone",
+		if (prc == UPATCH_PURGE_OTHER_SIGNER ||
+		    prc == UPATCH_PURGE_NO_ARCHIVE)
+			continue;
+		if (prc == UPATCH_PURGE_NO_SIGNER && boot) {
+			pr_warn("keys revoke: %s.upatch is left for boot-restore to ignore",
 				name);
 			continue;
 		}
+		if (prc == UPATCH_PURGE_NO_SIGNER)
+			prc = -EBADMSG;
 		if (prc < 0) {
 			pr_err("keys revoke: purge %s: %s", name,
 			       strerror(-prc));
@@ -925,7 +982,7 @@ int keys_revoke_image(const __u8 *der, size_t size, bool boot)
 				return ret;
 		}
 	}
-	ret = purge_signed_by(der, size, &unloaded);
+	ret = purge_signed_by(der, size, boot, &unloaded);
 	return min(ret, 0);
 }
 

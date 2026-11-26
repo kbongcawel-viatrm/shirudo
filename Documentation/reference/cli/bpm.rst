@@ -112,8 +112,9 @@ Usage
      - no
      - no
 
-The lock is ``/var/lib/shirudo/locks/bpm.lock``. A locked subcommand waits
-for it. The helper subcommands execute ``shirudo-build`` (see
+On an enforcing target the lock is an exclusive flock on the state directory
+whose device and inode init recorded at boot. Before enforcement BPM uses
+``/var/lib/shirudo/locks/bpm.lock``. A locked subcommand waits for it. The helper subcommands execute ``shirudo-build`` (see
 :doc:`shirudo`). ``shirudo bpm --help`` and ``--list-cmds`` show ``build``
 and ``push`` only where the helper resolves. Elsewhere they are unknown
 subcommands. ``config update``, ``tree append`` and ``tree show`` always
@@ -525,6 +526,12 @@ Options take the value as the next argument or after ``=``, except
 install, upgrade, uninstall and list
 ------------------------------------
 
+``install``, ``upgrade`` and ``uninstall`` run only where enforcement is
+active. On a host that ran no ``shirudo init``, or whose ``init``
+failed, each prints ``bpm <action>: enforcement is not active; run
+shirudo init first`` and exits with status 1, before it reads or changes
+anything.
+
 ``install <source>/<name>[@<version>]`` takes the package from the index
 cached by ``repo update``: the given version, else the greatest. ``install
 oci://<registry>/<repository>:<tag>`` takes the package directly, with the
@@ -544,6 +551,17 @@ For each package ``install`` and ``upgrade``:
    --no-precheck`` does, each load measured.
 #. Record the package in ``/var/lib/shirudo/bpm/state.json``.
 
+Both open the package's directory and ``/var/lib/shirudo/bpm/staging``
+once, below the state directory whose device and inode init recorded,
+and reach the downloaded archive, the extracted version, its
+``cert.der`` and its members from those directories. The package digest
+is computed from the descriptor the download was written through, and
+the extraction reads that same descriptor. A mount below the state root
+stops the install with ``Invalid cross-device link``, a bind on the same
+file system and one file bound over another included. A symbolic link or
+an entry without the seal label stops it too. The version a failed
+install extracted is removed again.
+
 ``upgrade`` takes no argument. For every package not installed ``direct``
 it installs the greatest version in the cached index when that version is
 greater than the installed one: it unloads the old version with its
@@ -554,8 +572,13 @@ run, so a new version in a registered index reaches every target that
 runs the timer.
 
 ``uninstall <name>`` applies the package's shipped unload directives in
-reverse name order, each measured, removes the package directory and
-drops it from the state.
+reverse name order. BPM opens the directives from the installed version
+and reads each from the descriptor it checked. A load member without its
+directive stops uninstall. Cleanup removes load members before their
+directives, so an interrupted uninstall can finish on a retry. Successful
+uninstall removes the whole package directory, including archives and
+older versions left by upgrades. Uninstall refuses to cross mounts below
+the state root, as install and upgrade do.
 
 ``list`` prints the installed packages under the heading ``Installed
 packages:`` as a table with the columns ``NAME``, ``VERSION`` and

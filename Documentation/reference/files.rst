@@ -136,7 +136,7 @@ the label as foreign. In the initrd, ``init`` binds
    * - ``locks/bpm.lock``
      - ``bpm``
      - ``0600``
-     - Lock of ``repo update``, ``tree sync``, ``install``,
+     - Before enforcement, lock of ``repo update``, ``tree sync``, ``install``,
        ``uninstall`` and ``upgrade``.
    * - ``bpm/state.json``
      - ``bpm install``, ``uninstall``, ``upgrade``
@@ -383,6 +383,8 @@ by ``BPF_OBJ_GET`` (``ObjGet``). Directories stay listable.
        :doc:`/security/integrity-counters`.
    * - ``task_authority``, ``config_roots``
      - Task storage maps of runtime authority and expected config roots.
+   * - ``unlink_grant``
+     - Per-task permission to remove pins in one open upatch directory.
    * - ``task_policy``, ``socket_policy``
      - Maps ``shirudo_task_policy`` and ``shirudo_sock_policy``: the
        policy bits of each task and of each socket it creates, which

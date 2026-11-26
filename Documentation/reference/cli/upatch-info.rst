@@ -65,8 +65,8 @@ Options
      - off
      - Print one JSON object: ``schema``, ``path``, ``name``, ``type``,
        ``payload_type``, ``version``, ``payload_sha256``,
-       ``loader_insns_len``, ``signature_len``, ``metadata_len``,
-       ``data_len``, ``log_buf_sz``, ``file_size``, ``signed_name``,
+       ``loader_insns_len``, ``signature_len``, ``data_len``,
+       ``log_buf_sz``, ``file_size``, ``signed_name``,
        ``attach_metadata_len``, ``jar_len`` (0 but for a Java load),
        ``unload_payload_sha256`` and ``decoders``.
 
@@ -106,7 +106,6 @@ Describe an artifact:
    Loader:
      Instructions:          off=360 len=992
      Log buffer size:       1048576
-     Metadata:              (none)
      Data:                  off=6205 len=2456
 
    Signature:

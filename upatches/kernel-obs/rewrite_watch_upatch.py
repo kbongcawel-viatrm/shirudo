@@ -266,13 +266,11 @@ def rewrite(args):
 	magic, version, flags = struct.unpack_from("<QII", artifact, 0)
 	if magic != 0x53485244554e4150 or version != 1 or flags & 1:
 		raise RewriteError("input must be a version 1 load upatch")
-	loader_off, loader_len, sig_off, sig_len, meta_off, meta_len, \
-		data_off, data_len = struct.unpack_from("<8I", artifact, 304)
+	loader_off, loader_len, sig_off, sig_len = struct.unpack_from("<4I", artifact, 304)
+	data_off, data_len = struct.unpack_from("<2I", artifact, 328)
 	if (loader_off > len(artifact) or loader_len > len(artifact) - loader_off or
 	    data_off > len(artifact) or data_len > len(artifact) - data_off or
-	    sig_off > len(artifact) or sig_len > len(artifact) - sig_off or
-	    (meta_len and (meta_off > len(artifact) or
-			   meta_len > len(artifact) - meta_off))):
+	    sig_off > len(artifact) or sig_len > len(artifact) - sig_off):
 		raise RewriteError("upatch section bounds are invalid")
 	data_blob = artifact[data_off:data_off + data_len]
 	types, variables = read_watch_arrays(data_blob)

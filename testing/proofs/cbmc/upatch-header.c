@@ -29,8 +29,9 @@ void harness(void)
 		return;
 	__CPROVER_assert(n >= UPATCH_HEADER_SIZE, "a whole header");
 	__CPROVER_assert(h.magic == UPATCH_MAGIC &&
-			 h.version == UPATCH_VERSION && !h.reserved1,
-			 "its magic, version and zero reserved field");
+			 h.version == UPATCH_VERSION && !h.reserved1 &&
+			 !h.reserved2 && !h.reserved3,
+			 "its magic, version and zero reserved fields");
 	__CPROVER_assert(memchr(h.name, '\0', sizeof(h.name)),
 			 "a terminated name");
 	if (validate_bounds(&h, n))
@@ -39,13 +40,12 @@ void harness(void)
 			 h.type == UPATCH_TYPE_JAVA, "a known payload");
 	__CPROVER_assert(inside(h.loader_insns_off, h.loader_insns_len, n) &&
 			 inside(h.signature_off, h.signature_len, n) &&
-			 inside(h.metadata_off, h.metadata_len, n) &&
 			 inside(h.data_off, h.data_len, n),
 			 "every section inside the file, behind the header");
 	__CPROVER_assert(h.signature_len, "a signature");
 	if (h.type == UPATCH_TYPE_JAVA) {
 		__CPROVER_assert(!h.loader_insns_off && !h.loader_insns_len &&
-				 !h.metadata_len && !h.log_buf_sz &&
+				 !h.log_buf_sz &&
 				 !h.nr_maps && !h.nr_progs &&
 				 !h.rodata_data_off && h.data_len,
 				 "data alone, without a loader's fields");

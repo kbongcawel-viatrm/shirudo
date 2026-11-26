@@ -59,9 +59,9 @@ static int parse_header(const __u8 *m, size_t n,
 	p += 4;
 	out->signature_len	= get_le32(p);
 	p += 4;
-	out->metadata_off	= get_le32(p);
+	out->reserved2		= get_le32(p);
 	p += 4;
-	out->metadata_len	= get_le32(p);
+	out->reserved3		= get_le32(p);
 	p += 4;
 	out->data_off		= get_le32(p);
 	p += 4;
@@ -78,7 +78,7 @@ static int parse_header(const __u8 *m, size_t n,
 	out->type		= get_le32(p);
 	p += 4;
 	out->reserved1		= get_le32(p);
-	if (out->reserved1 != 0)
+	if (out->reserved1 || out->reserved2 || out->reserved3)
 		return -EINVAL;
 	return 0;
 }
@@ -109,7 +109,7 @@ static int validate_bpf_bounds(const struct upatch_host_header *h,
 /* A Java payload is all data: none of the loader's fields apply. */
 static int validate_java_bounds(const struct upatch_host_header *h)
 {
-	if (h->loader_insns_off || h->loader_insns_len || h->metadata_len ||
+	if (h->loader_insns_off || h->loader_insns_len ||
 	    h->log_buf_sz || h->nr_maps || h->nr_progs ||
 	    h->rodata_data_off || h->data_len == 0)
 		return -EINVAL;
@@ -120,8 +120,6 @@ static int validate_bounds(const struct upatch_host_header *h,
 			   size_t n)
 {
 	if (!section_inside(h->signature_off, h->signature_len, n))
-		return -EINVAL;
-	if (!section_inside(h->metadata_off, h->metadata_len, n))
 		return -EINVAL;
 	if (!section_inside(h->data_off, h->data_len, n))
 		return -EINVAL;
@@ -554,13 +552,6 @@ const void *upatch_signature(const struct upatch *u)
 	if (!u->map)
 		return NULL;
 	return u->map + u->hdr.signature_off;
-}
-
-const void *upatch_metadata(const struct upatch *u)
-{
-	if (!u->map || u->hdr.metadata_len == 0)
-		return NULL;
-	return u->map + u->hdr.metadata_off;
 }
 
 const void *upatch_data(const struct upatch *u)

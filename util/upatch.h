@@ -29,8 +29,8 @@ struct upatch_host_header {
 	__u32		loader_insns_len;
 	__u32		signature_off;
 	__u32		signature_len;
-	__u32		metadata_off;
-	__u32		metadata_len;
+	__u32		reserved2;
+	__u32		reserved3;
 	__u32		data_off;
 	__u32		data_len;
 	__u32		log_buf_sz;
@@ -91,7 +91,6 @@ void upatch_close(struct upatch *u);
  */
 const void *upatch_loader(const struct upatch *u);
 const void *upatch_signature(const struct upatch *u);
-const void *upatch_metadata(const struct upatch *u);
 const void *upatch_data(const struct upatch *u);
 
 bool upatch_is_unload(const struct upatch *u);
@@ -233,6 +232,12 @@ __u32 prog_specs_xdp_classes(const struct prog_spec *specs, __u32 nr_progs);
 int upatch_restore(const char *path);
 int upatch_install(const char *path);
 int upatch_remove(const char *path);
+/*
+ * The same from a file the caller holds open: fd is read, and path only
+ * names it in messages and reports.
+ */
+int upatch_install_fd(const char *path, int fd);
+int upatch_remove_fd(const char *path, int fd);
 
 /* A missing optional kprobe module permits tree projection advancement. */
 #define UPATCH_INSTALL_TARGET_MISSING	2
@@ -242,10 +247,25 @@ struct cert;
 /*
  * Detach, unpin and unarchive without a directive, because the key
  * that signed the upatch was revoked: 1 when the unload was measured,
- * 0 when only the archive went, -ESTALE when the archive under the name
- * is no longer one signer signed and stays, -errno otherwise.
+ * 0 when only the archive went, UPATCH_PURGE_OTHER_SIGNER when the archive
+ * stays because another key signed it, UPATCH_PURGE_NO_ARCHIVE when the
+ * name has none, UPATCH_PURGE_NO_SIGNER when it stays because no signer
+ * can be read from it and nothing runs under its name, -errno on
+ * failure. An -ENOENT is a failure like any other: the register lock or
+ * a pin was not there.
  */
+#define UPATCH_PURGE_OTHER_SIGNER	2
+#define UPATCH_PURGE_NO_ARCHIVE		3
+#define UPATCH_PURGE_NO_SIGNER		4
 int upatch_purge(const char *name, const struct cert *signer,
 		 const char *reason);
+
+/*
+ * Whether upatch_purge() could tell who signed the archive of name: 0,
+ * UPATCH_PURGE_NO_ARCHIVE without an archive, -errno for one that does
+ * not parse, is filed under another name than it signs or has no
+ * signer, and when the register lock cannot be taken.
+ */
+int upatch_purge_check(const char *name);
 
 #endif /* SHIRUDO_UTIL_UPATCH_H */

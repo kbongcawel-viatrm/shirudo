@@ -22,7 +22,7 @@
 
 void harness(void)
 {
-	__u32 loader_off, loader_len, sig_off, sig_len, meta_off, meta_len;
+	__u32 loader_off, loader_len, sig_off, sig_len;
 	__u32 data_off, data_len, log_buf_sz, rodata_data_off;
 	__u32 type, flags, nr_maps, nr_progs;
 	__u8 payload[UPATCH_PAYLOAD_HASH_LEN];
@@ -40,9 +40,8 @@ void harness(void)
 			 strnlen(name, len) == len);
 	__CPROVER_assert(!pack_header(&h, name, type, flags, payload,
 				      loader_off, loader_len, sig_off, sig_len,
-				      meta_off, meta_len, data_off, data_len,
-				      log_buf_sz, rodata_data_off, nr_maps,
-				      nr_progs),
+				      data_off, data_len, log_buf_sz,
+				      rodata_data_off, nr_maps, nr_progs),
 			 "a name shorter than the field is packed");
 	__CPROVER_assume(n >= sizeof(h));
 	__CPROVER_assert(!parse_header((const __u8 *)&h, n, &out),
@@ -56,8 +55,6 @@ void harness(void)
 			 out.loader_insns_len == loader_len &&
 			 out.signature_off == sig_off &&
 			 out.signature_len == sig_len &&
-			 out.metadata_off == meta_off &&
-			 out.metadata_len == meta_len &&
 			 out.data_off == data_off && out.data_len == data_len,
 			 "the offset and length of every section");
 	__CPROVER_assume(i < sizeof(name));
