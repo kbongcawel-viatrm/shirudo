@@ -14,6 +14,21 @@ make -C deploy/podman python-scan
 The scan generates an SPDX SBOM and Trivy report. The review packet documents
 the affected image, advisory, test and approval requirements.
 
+## Multi-language image pipeline
+
+Workload fixtures cover Python, Node.js, TypeScript, Vite, C, Go and Rust.
+
+```bash
+make -C deploy/podman scan-all
+./deploy/podman/scripts/language-vulnerability-workflow.sh typescript CVE-YYYY-NNNN
+./deploy/podman/scripts/language-vulnerability-workflow.sh go GHSA-xxxx-xxxx-xxxx
+```
+
+The scanner builds each image, emits an SPDX SBOM and Trivy JSON report, and fails on HIGH/CRITICAL findings. Set `SEVERITY=CRITICAL` to tighten the gate.
+
+## Shirudo language-support boundary
+
+Container scanning/SBOM coverage is provided for all seven language/build families. This does not mean Shirudo has a userspace upatch implementation for each language. The documented userspace application upatch path in this fork is Java-agent based. For these languages, identify whether the flaw is in a dependency, interpreter/runtime, native extension, application logic or kernel. Dependency/runtime upgrades and image rebuilds are the default permanent remediation. A Shirudo shield requires a vulnerability-specific supported mitigation, regression tests, operator signing and canary verification.
 ## Shirudo operator lifecycle
 
 Install the Shirudo operator CLI using the upstream release/build guide. Keep
