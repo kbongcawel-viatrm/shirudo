@@ -1,0 +1,1 @@
+{"name":"shirudo-typescript-demo","version":"1.0.0","private":true,"type":"module","scripts":{"build":"tsc","start":"node dist/index.js"},"devDependencies":{"@types/node":"22.15.30","typescript":"5.8.3"},"engines":{"node":">=22 <23"}}

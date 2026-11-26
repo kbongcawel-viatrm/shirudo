@@ -1,0 +1,1 @@
+{"name":"shirudo-vite-demo","version":"1.0.0","private":true,"type":"module","scripts":{"build":"vite build"},"dependencies":{"vite":"6.3.5"}}
